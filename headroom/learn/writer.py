@@ -364,8 +364,14 @@ def _merge_into_file(file_path: Path, new_recommendations: list[Recommendation])
     section = _build_section(merged)
     if file_path.exists():
         existing = _read_text_tolerant(file_path)
-        if _MARKER_START in existing:
-            return _MARKER_PATTERN.sub(lambda _match: section, existing)
+        # The block is the LAST start marker that still has an end marker after
+        # it: prose above the block may quote the start marker, and a start
+        # marker with no end marker is not a block to rewrite (#4339).
+        last_end = existing.rfind(_MARKER_END)
+        start = existing.rfind(_MARKER_START, 0, last_end) if last_end >= 0 else -1
+        if start >= 0:
+            end = existing.index(_MARKER_END, start) + len(_MARKER_END)
+            return existing[:start] + section + existing[end:]
         return existing.rstrip() + "\n\n" + section + "\n"
     return section + "\n"
 
