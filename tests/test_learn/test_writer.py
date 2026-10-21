@@ -335,6 +335,53 @@ class TestClaudeCodeWriter:
         assert "- Use uv" in final
         assert "- Hand-written rule: never force-push" in final
 
+    def test_merge_keeps_prose_quoting_both_markers_after_the_block(self, tmp_path):
+        """Marker quotes in prose below the block are hand-written text, not a second block."""
+        context_file = tmp_path / "CLAUDE.local.md"
+        context_file.write_text(
+            f"{_MARKER_START}\n"
+            "## Headroom Learned Patterns\n\n"
+            "### Environment\n"
+            "- old bullet\n\n"
+            f"{_MARKER_END}\n\n"
+            f"Example: {_MARKER_START}\n"
+            "- Hand-written rule: never force-push\n"
+            f"{_MARKER_END}\n"
+        )
+        recommendation = _rec(RecommendationTarget.CONTEXT_FILE, "Tooling", "- Use uv")
+
+        final = _merge_into_file(context_file, [recommendation])
+
+        assert "- Hand-written rule: never force-push" in final
+        assert final.startswith(f"{_MARKER_START}\n## Headroom Learned Patterns")
+        block = final[: final.index(_MARKER_END)]
+        assert "- Use uv" in block
+        assert "- old bullet" in block
+        assert final.count(f"Example: {_MARKER_START}") == 1
+
+    def test_prior_sections_come_from_the_block_not_from_quoting_prose(self, tmp_path):
+        """Headings in prose that quotes the start marker must not become generated sections."""
+        context_file = tmp_path / "CLAUDE.local.md"
+        context_file.write_text(
+            f"Example: {_MARKER_START}\n"
+            "### Manual policy\n"
+            "- Hand-written rule: never force-push\n\n"
+            f"{_MARKER_START}\n"
+            "## Headroom Learned Patterns\n\n"
+            "### Environment\n"
+            "- old bullet\n\n"
+            f"{_MARKER_END}\n"
+        )
+        recommendation = _rec(RecommendationTarget.CONTEXT_FILE, "Tooling", "- Use uv")
+
+        final = _merge_into_file(context_file, [recommendation])
+
+        assert final.count("### Manual policy") == 1
+        block = final[final.index(f"\n{_MARKER_START}\n") :]
+        assert "### Manual policy" not in block
+        assert "### Environment" in block
+        assert "- Use uv" in block
+
     def test_memory_md_carry_forward(self, tmp_path):
         """Carry-forward also works for MEMORY.md."""
         proj = _project(tmp_path)
