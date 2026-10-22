@@ -1363,7 +1363,6 @@ class GeminiHandlerMixin:
         from headroom.proxy.helpers import _read_request_json
         from headroom.utils import extract_user_query
 
-        start_time = time.time()
         request_id = await self._next_request_id()
 
         # Parse request
@@ -1385,7 +1384,6 @@ class GeminiHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
-        client = classify_client(headers)
         tags = extract_tags(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
         from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
@@ -1524,7 +1522,6 @@ class GeminiHandlerMixin:
 
         try:
             response = await self._retry_request("POST", url, headers, body)
-            total_latency = (time.time() - start_time) * 1000
 
             # Parse response to get token count
             compressed_tokens = 0
@@ -1539,28 +1536,9 @@ class GeminiHandlerMixin:
                 max(0, original_tokens - compressed_tokens) if compressed_tokens > 0 else 0
             )
 
-            # Fallback denominator (see comment on the main gemini
-            # record_request site) — pre-comp request size.
-            # countTokens is a sizing helper; it never generates output
-            # tokens and never touches cache. The funnel handles the
-            # "nothing to report" shape with all-zero cache defaults.
-            await self._record_request_outcome(
-                RequestOutcome(
-                    request_id=request_id,
-                    provider=provider_name,
-                    model=model,
-                    status_code=response.status_code,
-                    original_tokens=original_tokens,
-                    optimized_tokens=compressed_tokens,
-                    output_tokens=0,
-                    tokens_saved=tokens_saved,
-                    attempted_input_tokens=compressed_tokens + tokens_saved,
-                    total_latency_ms=total_latency,
-                    transforms_applied=tuple(transforms_applied),
-                    tags=tags,
-                    client=client,
-                )
-            )
+            # countTokens is a sizing helper: the provider generates and bills
+            # nothing for it, so it is logged below but never recorded as a
+            # request outcome (that would book it as spend and savings).
 
             if tokens_saved > 0:
                 logger.info(
