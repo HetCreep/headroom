@@ -141,6 +141,9 @@ class TokenizerRegistry:
     # Registered factories (backend -> factory function)
     _factories: dict[str, Callable[[str], TokenCounter]] = {}
 
+    # Registered per-model factories (model -> factory function)
+    _model_factories: dict[str, Callable[[str], TokenCounter]] = {}
+
     # Cache for auto-detected tokenizers
     _cache: dict[str, TokenCounter] = {}
 
@@ -235,7 +238,7 @@ class TokenizerRegistry:
         if tokenizer is not None:
             registry._tokenizers[model_lower] = tokenizer
         elif factory is not None:
-            registry._factories[model_lower] = factory
+            registry._model_factories[model_lower] = factory
         else:
             raise ValueError("Must provide either tokenizer or factory")
 
@@ -292,6 +295,9 @@ class TokenizerRegistry:
             TokenCounter instance.
         """
         if backend is None:
+            model_factory = self._model_factories.get(model.lower())
+            if model_factory is not None:
+                return model_factory(model)
             backend = self._detect_backend(model)
 
         factory = self._factories.get(backend)

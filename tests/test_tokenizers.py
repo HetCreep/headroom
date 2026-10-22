@@ -411,6 +411,28 @@ class TestTokenizerRegistry:
         retrieved = get_tokenizer("my-custom-model")
         assert retrieved is custom
 
+    def test_register_model_factory_is_used_for_that_model(self):
+        """A factory registered for a model must be consulted by get_tokenizer."""
+        calls: list[str] = []
+
+        def factory(model: str) -> TokenCounter:
+            calls.append(model)
+            return EstimatingTokenCounter(chars_per_token=1.0)
+
+        register_tokenizer("My-Factory-Model", factory=factory)
+        try:
+            tokenizer = get_tokenizer("my-factory-model")
+            assert calls == ["my-factory-model"]
+            assert tokenizer.count_text("hello") == 5
+            # An explicit backend still bypasses the model factory.
+            forced = get_tokenizer("my-factory-model", backend="estimation")
+            assert forced.count_text("hello") != 5
+            # Registering a factory must not pollute the backend table.
+            assert "my-factory-model" not in TokenizerRegistry.list_backends()
+        finally:
+            getattr(TokenizerRegistry, "_model_factories", {}).pop("my-factory-model", None)
+            TokenizerRegistry.clear_cache()
+
     def test_list_supported_models(self):
         """Test listing supported models."""
         models = list_supported_models()
