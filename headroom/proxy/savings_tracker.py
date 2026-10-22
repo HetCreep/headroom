@@ -26,7 +26,7 @@ from typing import Any
 from headroom import paths as _paths
 from headroom.log_safety import WarnOnce, describe_exception, safe_id
 from headroom.proxy import project_name_policy
-from headroom.proxy.persistent_metrics import PersistentMetricsState
+from headroom.proxy.persistent_metrics import PersistentMetricsState, bounded_model_key
 
 PROJECT_NAME_MAX_LENGTH = project_name_policy.PROJECT_NAME_MAX_LENGTH
 sanitize_project_name = project_name_policy.sanitize_project_name
@@ -1578,7 +1578,7 @@ class SavingsTracker:
         without migration.
         """
         by_model: dict[str, dict[str, Any]] = self._state.setdefault("by_model", {})
-        key = _normalize_model(model)
+        key = bounded_model_key(_normalize_model(model), by_model)
         entry = by_model.setdefault(key, _empty_by_model_entry())
         entry["requests"] += max(requests_delta, 0)
         entry["tokens_saved"] += max(tokens_saved_delta, 0)

@@ -27,6 +27,7 @@ from headroom.proxy.budget_basis_policy import (
     resolve_estimated_basis_policy,
 )
 from headroom.proxy.modes import PROXY_MODE_CACHE
+from headroom.proxy.persistent_metrics import bounded_model_key
 
 if TYPE_CHECKING:
     from headroom.proxy.prometheus_metrics import PrometheusMetrics
@@ -1085,10 +1086,9 @@ class CostTracker:
                 model,
             )
             tokens_saved = 0
-        self._tokens_saved_by_model[model] = (
-            self._tokens_saved_by_model.get(model, 0) + tokens_saved
-        )
-        self._tool_saved_by_model[model] = self._tool_saved_by_model.get(model, 0) + max(
+        key = bounded_model_key(model, self._requests_by_model)
+        self._tokens_saved_by_model[key] = self._tokens_saved_by_model.get(key, 0) + tokens_saved
+        self._tool_saved_by_model[key] = self._tool_saved_by_model.get(key, 0) + max(
             0, tool_schema_saved
         )
         # A request the provider reported no cache data for (or whose write
@@ -1126,7 +1126,7 @@ class CostTracker:
                 uncached_tokens=uncached_tokens,
                 region="live_zone",
             )
-            wkey = (model, long_context)
+            wkey = (key, long_context)
             self._saved_write_5m_by_tier[wkey] = self._saved_write_5m_by_tier.get(wkey, 0.0) + c_w5m
             self._saved_write_1h_by_tier[wkey] = self._saved_write_1h_by_tier.get(wkey, 0.0) + c_w1h
             self._saved_list_by_tier[wkey] = self._saved_list_by_tier.get(wkey, 0.0) + c_list
@@ -1145,46 +1145,40 @@ class CostTracker:
                 uncached_tokens=uncached_tokens,
                 region="prefix",
             )
-            self._tool_saved_read_by_model[model] = (
-                self._tool_saved_read_by_model.get(model, 0.0) + read_part
+            self._tool_saved_read_by_model[key] = (
+                self._tool_saved_read_by_model.get(key, 0.0) + read_part
             )
-            self._tool_saved_write_5m_by_model[model] = (
-                self._tool_saved_write_5m_by_model.get(model, 0.0) + w5m_part
+            self._tool_saved_write_5m_by_model[key] = (
+                self._tool_saved_write_5m_by_model.get(key, 0.0) + w5m_part
             )
-            self._tool_saved_write_1h_by_model[model] = (
-                self._tool_saved_write_1h_by_model.get(model, 0.0) + w1h_part
+            self._tool_saved_write_1h_by_model[key] = (
+                self._tool_saved_write_1h_by_model.get(key, 0.0) + w1h_part
             )
-            self._tool_saved_list_by_model[model] = (
-                self._tool_saved_list_by_model.get(model, 0.0) + list_part
+            self._tool_saved_list_by_model[key] = (
+                self._tool_saved_list_by_model.get(key, 0.0) + list_part
             )
-        self._tokens_sent_by_model[model] = self._tokens_sent_by_model.get(model, 0) + tokens_sent
+        self._tokens_sent_by_model[key] = self._tokens_sent_by_model.get(key, 0) + tokens_sent
         if provider_reported:
-            self._provider_tokens_sent_by_model[model] = (
-                self._provider_tokens_sent_by_model.get(model, 0) + tokens_sent
+            self._provider_tokens_sent_by_model[key] = (
+                self._provider_tokens_sent_by_model.get(key, 0) + tokens_sent
             )
-            self._provider_requests_by_model[model] = (
-                self._provider_requests_by_model.get(model, 0) + 1
-            )
-        okey = (model, long_context)
+            self._provider_requests_by_model[key] = self._provider_requests_by_model.get(key, 0) + 1
+        okey = (key, long_context)
         self._output_tokens_by_tier[okey] = self._output_tokens_by_tier.get(okey, 0) + max(
             0, output_tokens
         )
-        self._requests_by_model[model] = self._requests_by_model.get(model, 0) + 1
-        self._api_cache_read_by_model[model] = (
-            self._api_cache_read_by_model.get(model, 0) + cache_read_tokens
+        self._requests_by_model[key] = self._requests_by_model.get(key, 0) + 1
+        self._api_cache_read_by_model[key] = (
+            self._api_cache_read_by_model.get(key, 0) + cache_read_tokens
         )
-        self._api_cache_write_by_model[model] = (
-            self._api_cache_write_by_model.get(model, 0) + write_eff
+        self._api_cache_write_by_model[key] = self._api_cache_write_by_model.get(key, 0) + write_eff
+        self._api_cache_write_5m_by_model[key] = (
+            self._api_cache_write_5m_by_model.get(key, 0) + write_5m_eff
         )
-        self._api_cache_write_5m_by_model[model] = (
-            self._api_cache_write_5m_by_model.get(model, 0) + write_5m_eff
+        self._api_cache_write_1h_by_model[key] = (
+            self._api_cache_write_1h_by_model.get(key, 0) + write_1h_eff
         )
-        self._api_cache_write_1h_by_model[model] = (
-            self._api_cache_write_1h_by_model.get(model, 0) + write_1h_eff
-        )
-        self._api_uncached_by_model[model] = (
-            self._api_uncached_by_model.get(model, 0) + uncached_tokens
-        )
+        self._api_uncached_by_model[key] = self._api_uncached_by_model.get(key, 0) + uncached_tokens
 
         # Populate _costs so check_budget() has real data to enforce against.
         # When the call site had no API usage breakdown (all cache/uncached
@@ -1219,7 +1213,7 @@ class CostTracker:
         if not (uncached_tokens or cache_read_tokens or cache_write_tokens):
             input_tokens = tokens_sent
             basis = COST_BASIS_ESTIMATED
-            _warn_estimated_basis_once(model)
+            _warn_estimated_basis_once(key)
         cost = self.estimate_cost(
             model=model,
             input_tokens=input_tokens,
