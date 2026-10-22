@@ -250,6 +250,8 @@ def capture_codex_wire_debug(
 #     prefix) is never mutated.
 #   - "disabled": Memory context lookup is skipped entirely; the request
 #     forwards untouched.
+#   - "tool": Auto-injection is off; the agent calls memory tools explicitly
+#     (skip reason ``mode_tool`` in memory_decision.py).
 #
 # Configurable via HEADROOM_MEMORY_INJECTION_MODE env var. There is no
 # "system_prompt" option — that path is permanently retired by I2 (cache hot

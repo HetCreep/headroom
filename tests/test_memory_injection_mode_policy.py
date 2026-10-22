@@ -17,6 +17,15 @@ def test_resolve_memory_injection_mode_defaults_for_missing_value() -> None:
 def test_resolve_memory_injection_mode_accepts_known_values_case_insensitively() -> None:
     assert resolve_memory_injection_mode("live_zone_tail") == "live_zone_tail"
     assert resolve_memory_injection_mode(" DISABLED ") == "disabled"
+    assert resolve_memory_injection_mode(" Tool ") == "tool"
+
+
+def test_get_memory_injection_mode_accepts_tool_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Documented in memory_decision.py (mode_tool); must not raise per request.
+    from headroom.proxy.helpers import get_memory_injection_mode
+
+    monkeypatch.setenv("HEADROOM_MEMORY_INJECTION_MODE", "tool")
+    assert get_memory_injection_mode() == "tool"
 
 
 def test_resolve_memory_injection_mode_rejects_unknown_values() -> None:
