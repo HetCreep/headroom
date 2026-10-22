@@ -382,6 +382,11 @@ def _bash_binaries_match(a: str, b: str) -> bool:
     return False
 
 
+# _levenshtein is O(n*m) pure Python and runs on the request path; longer
+# commands skip it and are judged by the linear token-overlap check below.
+_RETRY_EDIT_DISTANCE_MAX_CHARS = 512
+
+
 def _commands_related_as_retry(failed: str, success: str) -> bool:
     """Heuristic: is `success` plausibly a corrected retry of `failed`?
 
@@ -405,7 +410,10 @@ def _commands_related_as_retry(failed: str, success: str) -> bool:
         return False
 
     max_len = max(len(failed), len(success))
-    if max_len > 0 and _levenshtein(failed, success) / max_len <= 0.40:
+    if (
+        0 < max_len <= _RETRY_EDIT_DISTANCE_MAX_CHARS
+        and _levenshtein(failed, success) / max_len <= 0.40
+    ):
         return True
 
     def _substantive(cmd: str, binary: str) -> set[str]:

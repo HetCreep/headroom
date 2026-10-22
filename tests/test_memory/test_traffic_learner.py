@@ -2918,3 +2918,28 @@ class TestPendingStatePersistence:
         await second.start()
         assert second.get_stats()["pending_patterns"] == 0
         await second.stop()
+
+
+def test_long_commands_skip_the_quadratic_edit_distance(monkeypatch):
+    """#4367: commands past the cap are judged without _levenshtein."""
+    import headroom.memory.traffic_learner as tl
+
+    real = tl._levenshtein
+
+    def _guarded(a, b):
+        # binary-name matching may still use it on short names
+        if max(len(a), len(b)) > tl._RETRY_EDIT_DISTANCE_MAX_CHARS:
+            raise AssertionError("edit distance computed on an oversized command")
+        return real(a, b)
+
+    monkeypatch.setattr(tl, "_levenshtein", _guarded)
+    body = "x" * (tl._RETRY_EDIT_DISTANCE_MAX_CHARS + 1)
+    # shared substantive token -> still related, via the linear path
+    assert tl._commands_related_as_retry(f"python {body} run", f"python3 {body} run")
+    # no shared substantive token -> unrelated
+    assert not tl._commands_related_as_retry(f"python {body}", "python other.py")
+
+
+def test_short_commands_still_use_edit_distance():
+    """Commands within the cap keep the existing edit-distance behaviour."""
+    assert _commands_related_as_retry("cargo build", "cargo build --release")
