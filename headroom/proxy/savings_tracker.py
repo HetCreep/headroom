@@ -723,7 +723,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
     if isinstance(entry, dict):
         timestamp = _parse_timestamp(entry.get("timestamp"))
         total_tokens_saved = _coerce_int(entry.get("total_tokens_saved"))
-        compression_savings_usd = _coerce_float(entry.get("compression_savings_usd"))
+        compression_savings_usd = _coerce_signed_float(entry.get("compression_savings_usd"))
         # Older history points predate cache-savings tracking and omit these
         # keys entirely; default to 0/0.0 rather than raising or dropping the
         # entry, matching how every other field here handles legacy shapes.
@@ -743,7 +743,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
         timestamp = _parse_timestamp(entry[0])
         total_tokens_saved = _coerce_int(entry[1])
         if len(entry) >= 3:
-            compression_savings_usd = _coerce_float(entry[2])
+            compression_savings_usd = _coerce_signed_float(entry[2])
         if len(entry) >= 4:
             total_input_tokens = _coerce_int(entry[3])
         if len(entry) >= 5:
@@ -1877,7 +1877,7 @@ class SavingsTracker:
         if isinstance(lifetime_raw, dict):
             lifetime_requests = _coerce_int(lifetime_raw.get("requests"))
             lifetime_tokens_saved = _coerce_int(lifetime_raw.get("tokens_saved"))
-            lifetime_savings_usd = _coerce_float(lifetime_raw.get("compression_savings_usd"))
+            lifetime_savings_usd = _coerce_signed_float(lifetime_raw.get("compression_savings_usd"))
             lifetime_tool_tokens_saved = _coerce_int(lifetime_raw.get("tool_tokens_saved"))
             lifetime_tool_savings_usd = _coerce_float(lifetime_raw.get("tool_schema_savings_usd"))
             lifetime_cache_read_tokens = _coerce_int(lifetime_raw.get("cache_read_tokens"))
@@ -1903,7 +1903,7 @@ class SavingsTracker:
             )
             lifetime_savings_usd = max(
                 lifetime_savings_usd,
-                _coerce_float(last["compression_savings_usd"]),
+                _coerce_signed_float(last["compression_savings_usd"]),
             )
             lifetime_tool_tokens_saved = max(
                 lifetime_tool_tokens_saved,
@@ -2221,7 +2221,7 @@ class SavingsTracker:
             2,
         )
         session["compression_savings_usd"] = round(
-            _coerce_float(session.get("compression_savings_usd")),
+            _coerce_signed_float(session.get("compression_savings_usd")),
             6,
         )
         session["total_input_cost_usd"] = round(
