@@ -56,9 +56,6 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL_S = 0.3
 
-# Same set cli/wrap.py uses to recognise "this machine" when avoiding a self-loop.
-_LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
-
 
 def _settings_path() -> Path:
     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
@@ -103,12 +100,16 @@ class CCSwitchReconciler:
         self._last_mtime_ns: int | None = None
 
     def _is_self(self, url: str) -> bool:
-        """True if ``url`` names this proxy (any local spelling, any path)."""
+        """True if ``url`` names this proxy (``localhost`` or its bind address, any path).
+
+        Loopback families are distinct sockets: ``[::1]`` is not the proxy when it is
+        bound to ``127.0.0.1``, so another local provider on that address is captured.
+        """
         try:
             want = urlsplit(self.proxy_url)
             got = urlsplit(url)
             return (
-                (got.hostname or "").lower() in _LOCAL_HOSTNAMES
+                (got.hostname or "").lower() in {"localhost", (want.hostname or "").lower()}
                 and got.scheme == want.scheme
                 and got.port == want.port
             )
