@@ -382,6 +382,46 @@ class TestClaudeCodeWriter:
         assert "### Environment" in block
         assert "- Use uv" in block
 
+    def test_merge_leaves_a_fenced_example_of_the_block_untouched(self, tmp_path):
+        """Markers inside a fenced Markdown example are not the managed block."""
+        context_file = tmp_path / "CLAUDE.local.md"
+        example = f"```markdown\n{_MARKER_START}\nEXAMPLE_SENTINEL\n{_MARKER_END}\n```\n"
+        context_file.write_text(
+            "How the managed block looks:\n\n" + example + "\n"
+            f"{_MARKER_START}\n"
+            "## Headroom Learned Patterns\n\n"
+            "### Environment\n"
+            "- old bullet\n\n"
+            f"{_MARKER_END}\n"
+        )
+        recommendation = _rec(RecommendationTarget.CONTEXT_FILE, "Tooling", "- Use uv")
+
+        final = _merge_into_file(context_file, [recommendation])
+
+        assert example in final
+        real_block = final[final.index(example) + len(example) :]
+        assert "- Use uv" in real_block
+        assert "- old bullet" in real_block
+        assert "- Use uv" not in final[: final.index(example) + len(example)]
+
+    def test_fenced_code_inside_the_block_does_not_hide_its_end_marker(self, tmp_path):
+        """A closed code fence in a recommendation body keeps the block recognisable."""
+        context_file = tmp_path / "CLAUDE.local.md"
+        context_file.write_text(
+            f"{_MARKER_START}\n"
+            "## Headroom Learned Patterns\n\n"
+            "### Build\n"
+            "```bash\nmake test\n```\n\n"
+            f"{_MARKER_END}\n"
+        )
+        recommendation = _rec(RecommendationTarget.CONTEXT_FILE, "Tooling", "- Use uv")
+
+        final = _merge_into_file(context_file, [recommendation])
+
+        assert final.count(_MARKER_START) == 1
+        assert final.count(_MARKER_END) == 1
+        assert "- Use uv" in final
+
     def test_memory_md_carry_forward(self, tmp_path):
         """Carry-forward also works for MEMORY.md."""
         proj = _project(tmp_path)

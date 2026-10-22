@@ -37,20 +37,30 @@ def _find_managed_block(text: str) -> tuple[int, int] | None:
     The block is a line that is exactly the start marker through the next line
     that is exactly the end marker -- the shape ``_build_section`` writes. A
     marker quoted inside prose (sharing its line with other text, or indented)
-    is not a block boundary, and a start marker with no end marker before the
-    next start marker is not a block. Every reader and writer of the block in
+    or inside a fenced code block (a Markdown example) is not a block
+    boundary, and a start marker with no end marker before the next start
+    marker is not a block. Every reader and writer of the block in
     this module uses this one span, so the block that is parsed is the block
     that is replaced (#4339). ``end`` stops after the end marker, before its
     line break.
     """
     offset = 0
     start: int | None = None
+    fence: str | None = None  # the open fence's run, e.g. "```" or "~~~~"
     for line in text.splitlines(keepends=True):
         bare = line.rstrip()
-        if bare == _MARKER_START:
-            start = offset
-        elif bare == _MARKER_END and start is not None:
-            return start, offset + len(bare)
+        stripped = bare.lstrip(" ")
+        if len(bare) - len(stripped) <= 3 and stripped[:3] in ("```", "~~~"):
+            run = len(stripped) - len(stripped.lstrip(stripped[0]))
+            if fence is None:
+                fence = stripped[0] * run
+            elif stripped[0] == fence[0] and run >= len(fence) and not stripped[run:]:
+                fence = None
+        elif fence is None:
+            if bare == _MARKER_START:
+                start = offset
+            elif bare == _MARKER_END and start is not None:
+                return start, offset + len(bare)
         offset += len(line)
     return None
 
