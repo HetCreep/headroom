@@ -284,7 +284,9 @@ class ReadMaturationManager:
             for tc in msg.get("tool_calls", []) or []:
                 if not isinstance(tc, dict):
                     continue
-                func = tc.get("function", {})
+                func = tc.get("function")
+                if not isinstance(func, dict):  # "function": null / non-object
+                    continue
                 name = func.get("name", "")
                 if name not in _TOUCH_TOOLS:
                     continue
@@ -292,7 +294,11 @@ class ReadMaturationManager:
                     args = json.loads(func.get("arguments", "{}"))
                 except (ValueError, TypeError):
                     args = {}
+                if not isinstance(args, dict):  # arguments may decode to a list/str/number
+                    args = {}
                 fp = args.get("file_path") or args.get("path") or ""
+                if not isinstance(fp, str):  # used as a dict key below
+                    fp = ""
                 if fp:
                     act.file_last_touch[fp] = turn
                 if name in _READ_TOOLS:
@@ -306,8 +312,12 @@ class ReadMaturationManager:
                     name = b.get("name", "")
                     if name not in _TOUCH_TOOLS:
                         continue
-                    inp = b.get("input") or {}
+                    inp = b.get("input")
+                    if not isinstance(inp, dict):
+                        inp = {}
                     fp = inp.get("file_path") or inp.get("path") or ""
+                    if not isinstance(fp, str):  # used as a dict key below
+                        fp = ""
                     if fp:
                         act.file_last_touch[fp] = turn
                     if name in _READ_TOOLS:

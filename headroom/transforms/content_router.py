@@ -5788,7 +5788,9 @@ class ContentRouter(Transform):
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
                     tc_id = tc.get("id", "")
-                    fn = tc.get("function", {})
+                    fn = tc.get("function")
+                    if not isinstance(fn, dict):  # "function": null / non-object
+                        continue
                     name = fn.get("name", "")
                     call_args = fn.get("arguments")
                     if name:
