@@ -15,6 +15,10 @@ MAX_TRACKED_MODELS = 200
 MAX_EXPOSED_MODELS = 100
 MAX_LABEL_LENGTH = 128
 OTHER_MODEL = "other"
+# ``CostTracker.stats()`` skips keys with this prefix; an overflowing
+# passthrough name must keep it or it would enter the processed-traffic totals.
+PASSTHROUGH_PREFIX = "passthrough:"
+OTHER_PASSTHROUGH_MODEL = PASSTHROUGH_PREFIX + OTHER_MODEL
 
 
 def bounded_model_key(model: str, tracked: Any) -> str:
@@ -22,10 +26,13 @@ def bounded_model_key(model: str, tracked: Any) -> str:
 
     ``model`` comes from the request body, so it is clipped to
     ``MAX_LABEL_LENGTH`` and a new name past ``MAX_TRACKED_MODELS`` distinct
-    keys collapses into ``OTHER_MODEL``. ``tracked`` is the map being written.
+    keys collapses into ``OTHER_MODEL`` (``OTHER_PASSTHROUGH_MODEL`` for a
+    ``passthrough:`` name). ``tracked`` is the map being written.
     """
     key = model[:MAX_LABEL_LENGTH]
-    return key if key in tracked or len(tracked) < MAX_TRACKED_MODELS else OTHER_MODEL
+    if key in tracked or len(tracked) < MAX_TRACKED_MODELS:
+        return key
+    return OTHER_PASSTHROUGH_MODEL if key.startswith(PASSTHROUGH_PREFIX) else OTHER_MODEL
 
 
 KNOWN_MISS_REASONS = frozenset({"ttl_expiry", "prefix_change", "unknown"})

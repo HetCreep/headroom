@@ -27,7 +27,7 @@ from headroom.proxy.budget_basis_policy import (
     resolve_estimated_basis_policy,
 )
 from headroom.proxy.modes import PROXY_MODE_CACHE
-from headroom.proxy.persistent_metrics import bounded_model_key
+from headroom.proxy.persistent_metrics import MAX_TRACKED_MODELS, bounded_model_key
 
 if TYPE_CHECKING:
     from headroom.proxy.prometheus_metrics import PrometheusMetrics
@@ -90,7 +90,11 @@ _warned_estimated_basis_models: set[str] = set()
 
 def _warn_estimated_basis_once(model: str) -> None:
     """Warn the first time ``model`` books a cost against Headroom's estimate."""
-    if model in _warned_estimated_basis_models:
+    # Process-wide cap: the set outlives any one tracker (reset_runtime), so the
+    # per-tracker key bound alone does not limit it.
+    if model in _warned_estimated_basis_models or (
+        len(_warned_estimated_basis_models) >= MAX_TRACKED_MODELS
+    ):
         return
     _warned_estimated_basis_models.add(model)
     logger.warning(
