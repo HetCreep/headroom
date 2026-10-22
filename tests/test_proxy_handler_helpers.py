@@ -849,6 +849,53 @@ def test_vertex_stream_passthrough_preserves_chunks_and_records_usage() -> None:
     assert outcome.cache_read_tokens == 2
 
 
+def test_vertex_stream_passthrough_records_outcome_when_stream_ends_mid_character() -> None:
+    class _TruncatedClient(_VertexStreamClient):
+        async def send(self, request, stream=False):  # noqa: ANN001, ANN201
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"content-type": "text/event-stream"},
+                stream=_AsyncChunks(
+                    [
+                        b'data: {"usageMetadata":{"promptTokenCount":13,'
+                        b'"candidatesTokenCount":5}}\n\n',
+                        b'data: {"t":"\xe2\x82',  # first 2 bytes of a 3-byte character
+                    ]
+                ),
+            )
+
+    handler = object.__new__(HeadroomProxy)
+    handler.http_client = _TruncatedClient()
+    outcomes = []
+
+    async def next_request_id():  # noqa: ANN202
+        return "req_vertex_truncated"
+
+    async def record(outcome):  # noqa: ANN001, ANN202
+        outcomes.append(outcome)
+
+    handler._next_request_id = next_request_id
+    handler._record_request_outcome = record
+
+    response = asyncio.run(
+        handler.handle_passthrough(
+            _VertexStreamPassthroughRequest(),
+            "https://vertex.test",
+            "streamGenerateContent",
+            "vertex:google",
+        )
+    )
+
+    async def collect():  # noqa: ANN202
+        return [chunk async for chunk in response.body_iterator]
+
+    assert len(asyncio.run(collect())) == 2
+    assert len(outcomes) == 1
+    assert outcomes[0].optimized_tokens == 13
+    assert outcomes[0].output_tokens == 5
+
+
 def test_stream_finalizer_records_vertex_provider_for_dashboard() -> None:
     handler = object.__new__(HeadroomProxy)
     handler.config = SimpleNamespace(log_full_messages=False)

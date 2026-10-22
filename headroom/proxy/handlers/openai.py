@@ -11712,7 +11712,13 @@ class OpenAIHandlerMixin:
                 buf = stream_state["sse_buffer"]
                 if len(buf) > 0:
                     buf.extend(b"\n\n")
-                    _absorb_usage(self._parse_sse_usage_from_buffer(stream_state, stream_provider))
+                    # A truncated stream can end inside a multi-byte character;
+                    # the strict decoder then raises and would skip the outcome
+                    # below. Drop that unusable tail instead.
+                    with contextlib.suppress(UnicodeDecodeError):
+                        _absorb_usage(
+                            self._parse_sse_usage_from_buffer(stream_state, stream_provider)
+                        )
 
                 output_tokens = stream_state["output_tokens"] or 0
                 cache_read_tokens = stream_state["cache_read_input_tokens"] or 0
