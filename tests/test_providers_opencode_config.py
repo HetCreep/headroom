@@ -788,3 +788,19 @@ def test_inject_provider_config_leaves_unparseable_config_untouched(
         inject_opencode_provider_config(port=8787)
 
     assert config_file.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("suffix", ["", " \n"])
+def test_inject_provider_config_treats_bom_only_config_as_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    """A config holding only a BOM (and whitespace) is empty, not unparseable."""
+    _set_test_home(monkeypatch, tmp_path)
+    config_file = tmp_path / ".config" / "opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(chr(0xFEFF) + suffix, encoding="utf-8")
+
+    inject_opencode_provider_config(port=8787)
+
+    config = json.loads(config_file.read_text(encoding="utf-8"))
+    assert "headroom" in config["provider"]

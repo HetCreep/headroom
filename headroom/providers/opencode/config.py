@@ -231,7 +231,7 @@ def load_user_opencode_config(content: str, config_file: Path) -> dict[str, Any]
     """
     data = _try_parse_json_loose(content)
     if data is None:
-        if content.strip():
+        if content.lstrip("\ufeff").strip():
             raise click.ClickException(
                 f"could not parse OpenCode config at {config_file}; "
                 "leaving it unchanged. Fix the JSON/JSONC syntax and retry."
