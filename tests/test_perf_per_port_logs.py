@@ -414,3 +414,9 @@ def test_parse_log_files_skips_a_perf_line_with_non_numeric_fields(workspace: Pa
     report = analyzer.parse_log_files(last_n_hours=0.0)
 
     assert {r.model for r in report.perf_records} == {"model-GOOD"}
+    assert report.records_malformed == 1
+    assert report.records_filtered_out == 0  # nothing was outside the window
+    text = analyzer.format_report(report)
+    assert "Malformed PERF lines:" in text
+    assert "Records outside window" not in text
+    assert analyzer.build_perf_summary(report)["records_malformed"] == 1
