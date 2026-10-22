@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import click
 import pytest
 
 from headroom.providers.opencode.config import (
@@ -748,3 +749,42 @@ def test_jsonc_migration_treats_dangling_conflict_as_ambiguous(
     migrate_legacy_opencode_jsonc_backup(config, canonical)
     assert not canonical.exists()
     assert legacy.read_bytes() == original
+
+
+# ---------------------------------------------------------------------------
+# Unparseable user config must not be rewritten
+# ---------------------------------------------------------------------------
+
+
+def test_inject_provider_config_keeps_user_keys_with_bom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A config saved with a UTF-8 BOM keeps its user keys when the provider is injected."""
+    _set_test_home(monkeypatch, tmp_path)
+    config_file = tmp_path / ".config" / "opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    bom = chr(0xFEFF)
+    config_file.write_text(bom + '{"model": "gpt-4o", "mcp": {"x": {}}}', encoding="utf-8")
+
+    inject_opencode_provider_config(port=8787)
+
+    config = json.loads(config_file.read_text(encoding="utf-8"))
+    assert config["model"] == "gpt-4o"
+    assert config["mcp"] == {"x": {}}
+    assert "headroom" in config["provider"]
+
+
+def test_inject_provider_config_leaves_unparseable_config_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-empty config that cannot be parsed is reported, not replaced."""
+    _set_test_home(monkeypatch, tmp_path)
+    config_file = tmp_path / ".config" / "opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    original = '{"model": "gpt-4o" "oops": 1}'
+    config_file.write_text(original, encoding="utf-8")
+
+    with pytest.raises(click.ClickException, match="could not parse"):
+        inject_opencode_provider_config(port=8787)
+
+    assert config_file.read_text(encoding="utf-8") == original
