@@ -1887,7 +1887,7 @@ class SavingsTracker:
             migrated_at = lifetime_raw.get("savings_basis_migrated_at")
             is_v6_lifetime = "compression_savings_list_usd" in lifetime_raw
             if is_v6_lifetime:
-                lifetime_savings_list_usd = _coerce_float(
+                lifetime_savings_list_usd = _coerce_signed_float(
                     lifetime_raw.get("compression_savings_list_usd")
                 )
                 lifetime_basis = str(lifetime_raw.get("savings_basis") or BASIS_UNKNOWN)
@@ -1897,14 +1897,28 @@ class SavingsTracker:
 
         if normalized_history:
             last = normalized_history[-1]
+            # A losing request that saves no tokens and reads no cache appends
+            # no checkpoint, so the saved total can legitimately sit BELOW the
+            # last checkpoint. Only trust the checkpoint for dollars when the
+            # saved counters show the lifetime block is behind it.
+            history_ahead = (
+                lifetime_tokens_saved < last["total_tokens_saved"]
+                or lifetime_cache_read_tokens < _coerce_int(last.get("cache_read_tokens"))
+                or lifetime_output_tokens_saved < _coerce_int(last.get("output_tokens_saved"))
+                or lifetime_tool_tokens_saved < _coerce_int(last.get("tool_tokens_saved"))
+                or not (
+                    isinstance(lifetime_raw, dict) and "compression_savings_usd" in lifetime_raw
+                )
+            )
             lifetime_tokens_saved = max(
                 lifetime_tokens_saved,
                 last["total_tokens_saved"],
             )
-            lifetime_savings_usd = max(
-                lifetime_savings_usd,
-                _coerce_signed_float(last["compression_savings_usd"]),
-            )
+            if history_ahead:
+                lifetime_savings_usd = max(
+                    lifetime_savings_usd,
+                    _coerce_signed_float(last["compression_savings_usd"]),
+                )
             lifetime_tool_tokens_saved = max(
                 lifetime_tool_tokens_saved,
                 _coerce_int(last.get("tool_tokens_saved")),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from headroom.proxy.persistent_metrics import PersistentMetricsState
@@ -53,3 +55,64 @@ def test_lifetime_metrics_keep_negative_compression_savings() -> None:
     reloaded = PersistentMetricsState(state.to_dict()).to_dict()["cost"]
     assert reloaded["compression_savings_usd"] == pytest.approx(-0.5)
     assert reloaded["compression_savings_list_usd"] == pytest.approx(-0.5)
+
+
+def test_negative_list_total_survives_reload_and_next_request(tmp_path) -> None:
+    path = str(tmp_path / "savings.json")
+    live = SavingsTracker(path=path)
+    _losing_request(live)
+
+    reloaded = SavingsTracker(path=path)
+    assert reloaded.snapshot()["lifetime"]["compression_savings_list_usd"] == pytest.approx(-0.5)
+    reloaded.record_request(
+        model="claude-sonnet-4",
+        tokens_saved=100,
+        input_tokens=1000,
+        estimated_savings_usd={
+            "compression": 0.1,
+            "tool_schema": 0.0,
+            "compression_list": 0.1,
+            "tool_schema_list": 0.0,
+            "basis": "cache_aware",
+        },
+    )
+    lifetime = reloaded.snapshot()["lifetime"]
+    assert lifetime["compression_savings_usd"] == pytest.approx(-0.4)
+    assert lifetime["compression_savings_list_usd"] == pytest.approx(-0.4)
+
+
+def test_loss_after_last_checkpoint_is_not_overwritten_by_history(tmp_path) -> None:
+    path = tmp_path / "savings.json"
+    live = SavingsTracker(path=str(path))
+    live.record_request(
+        model="claude-sonnet-4",
+        tokens_saved=100,
+        input_tokens=1000,
+        estimated_savings_usd={
+            "compression": 0.5,
+            "tool_schema": 0.0,
+            "compression_list": 0.5,
+            "tool_schema_list": 0.0,
+            "basis": "cache_aware",
+        },
+    )
+    # No tokens saved and no cache reads: no history checkpoint is appended.
+    live.record_request(
+        model="claude-sonnet-4",
+        tokens_saved=0,
+        input_tokens=1000,
+        estimated_savings_usd={
+            "compression": -1.0,
+            "tool_schema": 0.0,
+            "compression_list": -1.0,
+            "tool_schema_list": 0.0,
+            "basis": "cache_aware",
+        },
+    )
+    live.flush()
+    saved = json.loads(path.read_text())
+    assert saved["lifetime"]["compression_savings_usd"] == pytest.approx(-0.5)
+    assert saved["history"][-1]["compression_savings_usd"] == pytest.approx(0.5)
+
+    reloaded = SavingsTracker(path=str(path)).snapshot()
+    assert reloaded["lifetime"]["compression_savings_usd"] == pytest.approx(-0.5)
