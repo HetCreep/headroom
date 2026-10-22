@@ -151,6 +151,86 @@ def test_detect_upstream_no_baseurl_skips(tmp_path: Path) -> None:
     assert upstream.base_url == "https://api.z.ai/api/anthropic"
 
 
+def test_detect_upstream_skips_provider_pointing_at_proxy(tmp_path: Path) -> None:
+    """A provider set to the Headroom proxy itself must not become the upstream."""
+    import json as _json
+
+    from headroom.providers.zcode.runtime import detect_upstream
+
+    config = tmp_path / "config.json"
+    config.write_text(
+        _json.dumps(
+            {
+                "provider": {
+                    "headroom": {
+                        "name": "Headroom",
+                        "kind": "anthropic",
+                        "enabled": True,
+                        "options": {"baseURL": "http://127.0.0.1:8787"},
+                    },
+                    "local": {
+                        "name": "Local",
+                        "kind": "openai",
+                        "enabled": True,
+                        "options": {"baseURL": "http://localhost:8787/v1"},
+                    },
+                    "other-port": {
+                        "name": "Other",
+                        "kind": "openai",
+                        "enabled": True,
+                        "options": {"baseURL": "http://127.0.0.1:9999/v1"},
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    upstream = detect_upstream(config, proxy_port=8787)
+    assert upstream.provider_name == "Other"
+    assert upstream.base_url == "http://127.0.0.1:9999/v1"
+
+
+def test_detect_upstream_only_proxy_provider_falls_back(tmp_path: Path) -> None:
+    """With only a proxy-pointing provider the Z.ai default is used."""
+    from headroom.providers.zcode.runtime import detect_upstream
+
+    config = tmp_path / "config.json"
+    config.write_text(
+        '{"provider": {"headroom": {"name": "Headroom", "kind": "anthropic", '
+        '"enabled": true, "options": {"baseURL": "http://127.0.0.1:8787"}}}}',
+        encoding="utf-8",
+    )
+    upstream = detect_upstream(config, proxy_port=8787)
+    assert upstream.provider_name == "Z.ai (default)"
+
+
+@pytest.mark.parametrize("base_url", [None, 42, ["x"]], ids=["null", "int", "list"])
+def test_detect_upstream_non_string_baseurl_skips(tmp_path: Path, base_url: object) -> None:
+    """detect_upstream falls back instead of raising when baseURL is not a string."""
+    import json as _json
+
+    from headroom.providers.zcode.runtime import detect_upstream
+
+    config = tmp_path / "config.json"
+    config.write_text(
+        _json.dumps(
+            {
+                "provider": {
+                    "zai": {
+                        "name": "Z.ai",
+                        "kind": "anthropic",
+                        "enabled": True,
+                        "options": {"baseURL": base_url},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    upstream = detect_upstream(config)
+    assert upstream.provider_name == "Z.ai (default)"
+
+
 @pytest.mark.parametrize(
     "bad_options",
     [
