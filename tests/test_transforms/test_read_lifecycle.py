@@ -436,6 +436,41 @@ class TestAnthropicFormat:
         user_msg = result.messages[1]
         assert user_msg["content"][0]["content"] == LARGE_CONTENT
 
+    def test_failed_edit_does_not_make_read_stale(self):
+        """A tool_result with is_error means the edit did not happen."""
+        mgr = ReadLifecycleManager(ReadLifecycleConfig(enabled=True))
+
+        failed = make_anthropic_tool_result("e1", "old_string not found")
+        failed["content"][0]["is_error"] = True
+        messages = [
+            make_anthropic_read("r1", "/src/app.py"),
+            make_anthropic_tool_result("r1", LARGE_CONTENT),
+            make_anthropic_edit("e1", "/src/app.py"),
+            failed,
+        ]
+
+        result = mgr.apply(messages)
+        assert result.reads_stale == 0
+        assert result.reads_fresh == 1
+        assert result.messages[1]["content"][0]["content"] == LARGE_CONTENT
+
+    def test_successful_edit_after_failed_edit_still_makes_read_stale(self):
+        mgr = ReadLifecycleManager(ReadLifecycleConfig(enabled=True))
+
+        failed = make_anthropic_tool_result("e1", "old_string not found")
+        failed["content"][0]["is_error"] = True
+        messages = [
+            make_anthropic_read("r1", "/src/app.py"),
+            make_anthropic_tool_result("r1", LARGE_CONTENT),
+            make_anthropic_edit("e1", "/src/app.py"),
+            failed,
+            make_anthropic_edit("e2", "/src/app.py"),
+            make_anthropic_tool_result("e2", "edit success"),
+        ]
+
+        result = mgr.apply(messages)
+        assert result.reads_stale == 1
+
 
 class TestCCRStoreIntegration:
     """Lifecycle manager stores originals in CCR."""
