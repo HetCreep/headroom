@@ -1363,6 +1363,7 @@ class GeminiHandlerMixin:
         from headroom.proxy.helpers import _read_request_json
         from headroom.utils import extract_user_query
 
+        start_time = time.time()
         request_id = await self._next_request_id()
 
         # Parse request
@@ -1384,6 +1385,7 @@ class GeminiHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
+        client = classify_client(headers)
         tags = extract_tags(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
         from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
@@ -1522,6 +1524,7 @@ class GeminiHandlerMixin:
 
         try:
             response = await self._retry_request("POST", url, headers, body)
+            total_latency = (time.time() - start_time) * 1000
 
             # Parse response to get token count
             compressed_tokens = 0
@@ -1537,8 +1540,28 @@ class GeminiHandlerMixin:
             )
 
             # countTokens is a sizing helper: the provider generates and bills
-            # nothing for it, so it is logged below but never recorded as a
-            # request outcome (that would book it as spend and savings).
+            # nothing for it, so a successful call is logged below but never
+            # booked as a request or as savings. An upstream rejection (429,
+            # 5xx) still goes through the funnel, which records it under the
+            # rate-limit / failure counters and stops before any success stats.
+            if response.status_code >= 400:
+                await self._record_request_outcome(
+                    RequestOutcome(
+                        request_id=request_id,
+                        provider=provider_name,
+                        model=model,
+                        status_code=response.status_code,
+                        original_tokens=original_tokens,
+                        optimized_tokens=compressed_tokens,
+                        output_tokens=0,
+                        tokens_saved=tokens_saved,
+                        attempted_input_tokens=compressed_tokens + tokens_saved,
+                        total_latency_ms=total_latency,
+                        transforms_applied=tuple(transforms_applied),
+                        tags=tags,
+                        client=client,
+                    )
+                )
 
             if tokens_saved > 0:
                 logger.info(
