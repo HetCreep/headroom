@@ -401,3 +401,16 @@ def test_router_content_dump_needs_the_content_opt_in(
         router_logger.setLevel(previous)
 
     assert ("secret-tool-output" in stream.getvalue()) is logged
+
+
+def test_parse_log_files_skips_a_perf_line_with_non_numeric_fields(workspace: Path) -> None:
+    """A PERF-shaped line with a non-numeric count is skipped, not fatal."""
+    log_dir = workspace / "logs"
+    ts = "2026-08-22 10:00:00,000"
+    bad = _perf_line(ts, "hr_bad", "model-BAD").replace("msgs=3", "msgs=lots")
+    good = _perf_line(ts, "hr_good", "model-GOOD")
+    (log_dir / "proxy.log").write_text(bad + "\n" + good + "\n")
+
+    report = analyzer.parse_log_files(last_n_hours=0.0)
+
+    assert {r.model for r in report.perf_records} == {"model-GOOD"}

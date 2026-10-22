@@ -384,9 +384,8 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
                         if not _within_window(ts):
                             report.records_filtered_out += 1
                             continue
-                        _track_window(ts)
-                        report.perf_records.append(
-                            PerfRecord(
+                        try:
+                            record = PerfRecord(
                                 timestamp=ts,
                                 request_id=m.group("rid"),
                                 model=kv.get("model", ""),
@@ -409,7 +408,13 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
                                 from_response_cache=kv.get("cached", "0") == "1",
                                 stages=stages_by_rid.get(m.group("rid"), {}),
                             )
-                        )
+                        except ValueError:
+                            # A non-numeric field is not a PERF line Headroom wrote
+                            # (e.g. text a client put into a logged model id).
+                            report.records_filtered_out += 1
+                            continue
+                        _track_window(ts)
+                        report.perf_records.append(record)
                         continue
 
                     # content_router summary lines
