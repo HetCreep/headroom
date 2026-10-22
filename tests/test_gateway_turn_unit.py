@@ -530,6 +530,29 @@ def test_merged_with_sums_billed_and_keeps_latest_cache() -> None:
     assert c.cache_read == 60  # a signal-free round does not erase the last signal
 
 
+def test_redrive_merges_keep_input_includes_cache() -> None:
+    """Re-drive rounds of an OpenAI-shaped turn must not be billed as Anthropic-shaped."""
+    first = normalize_usage(
+        {
+            "prompt_tokens": 100_000,
+            "completion_tokens": 10,
+            "prompt_tokens_details": {"cached_tokens": 80_000},
+        }
+    )
+    second = normalize_usage(
+        {
+            "prompt_tokens": 100_000,
+            "completion_tokens": 10,
+            "prompt_tokens_details": {"cached_tokens": 80_000},
+        }
+    )
+    for merged in (first.merged_with(second), first.summed_with(second)):
+        assert merged.input_includes_cache is True
+    billed = gt.complete_outcome(_outcome(), first.summed_with(second), status=200, latency_ms=1)
+    assert billed.provider_input_tokens == 200_000
+    assert billed.uncached_input_tokens == 40_000
+
+
 # --------------------------------------------------------------------------- #
 # Capabilities, obligations, outcome completion, compaction                   #
 # --------------------------------------------------------------------------- #

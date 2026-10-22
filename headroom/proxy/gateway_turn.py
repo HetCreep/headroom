@@ -272,6 +272,7 @@ class NormalizedUsage:
             output_tokens=_sum(self.output_tokens, other.output_tokens),
             cache_read=other.cache_read if other.has_cache_signal else self.cache_read,
             cache_write=other.cache_write if other.has_cache_signal else self.cache_write,
+            input_includes_cache=self.input_includes_cache or other.input_includes_cache,
         )
 
     def summed_with(self, other: NormalizedUsage) -> NormalizedUsage:
@@ -290,6 +291,7 @@ class NormalizedUsage:
             output_tokens=_sum(self.output_tokens, other.output_tokens),
             cache_read=_sum(self.cache_read, other.cache_read),
             cache_write=_sum(self.cache_write, other.cache_write),
+            input_includes_cache=self.input_includes_cache or other.input_includes_cache,
         )
 
     def as_anthropic(self) -> dict[str, int]:
