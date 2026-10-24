@@ -294,11 +294,11 @@ class ReadMaturationManager:
                     args = json.loads(func.get("arguments", "{}"))
                 except (ValueError, TypeError):
                     args = {}
-                if not isinstance(args, dict):  # arguments may decode to a list/str/number
-                    args = {}
+                if not isinstance(args, dict):  # list/str/number: unknown file
+                    continue
                 fp = args.get("file_path") or args.get("path") or ""
-                if not isinstance(fp, str):  # used as a dict key below
-                    fp = ""
+                if not isinstance(fp, str):  # unknown file: never mature this call
+                    continue
                 if fp:
                     act.file_last_touch[fp] = turn
                 if name in _READ_TOOLS:
@@ -313,11 +313,11 @@ class ReadMaturationManager:
                     if name not in _TOUCH_TOOLS:
                         continue
                     inp = b.get("input")
-                    if not isinstance(inp, dict):
-                        inp = {}
+                    if not isinstance(inp, dict):  # unknown file: never mature this call
+                        continue
                     fp = inp.get("file_path") or inp.get("path") or ""
-                    if not isinstance(fp, str):  # used as a dict key below
-                        fp = ""
+                    if not isinstance(fp, str):  # unknown file: never mature this call
+                        continue
                     if fp:
                         act.file_last_touch[fp] = turn
                     if name in _READ_TOOLS:

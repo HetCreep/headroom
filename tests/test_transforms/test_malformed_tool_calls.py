@@ -47,8 +47,13 @@ MALFORMED = {
 }
 
 
-def _conversation(assistant: dict) -> list[dict]:
-    result = "line of output\n" * 200
+# Compressible log text: a well-formed call to an unknown tool would be compressed,
+# so an unchanged result shows the malformed call's output was left alone.
+RESULT = "".join(f"2026-10-24 INFO worker {i % 7} processed item {i} ok\n" for i in range(400))
+
+
+def _conversation(assistant: dict, quiet_turns: int = 0) -> list[dict]:
+    result = RESULT
     if "tool_calls" in assistant:
         tool_msg = {"role": "tool", "tool_call_id": "c1", "content": result}
     else:
@@ -56,7 +61,15 @@ def _conversation(assistant: dict) -> list[dict]:
             "role": "user",
             "content": [{"type": "tool_result", "tool_use_id": "c1", "content": result}],
         }
-    return [{"role": "user", "content": "go"}, assistant, tool_msg]
+    messages = [{"role": "user", "content": "go"}, assistant, tool_msg]
+    for _ in range(quiet_turns):
+        messages += [{"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
+    return messages
+
+
+def _tool_result_text(messages: list[dict]) -> str:
+    content = messages[2]["content"]
+    return content if isinstance(content, str) else content[0]["content"]
 
 
 @pytest.mark.parametrize("assistant", MALFORMED.values(), ids=MALFORMED.keys())
@@ -68,8 +81,11 @@ def test_read_lifecycle_tolerates_malformed_tool_calls(assistant: dict) -> None:
 
 @pytest.mark.parametrize("assistant", MALFORMED.values(), ids=MALFORMED.keys())
 def test_read_maturation_tolerates_malformed_tool_calls(assistant: dict) -> None:
-    messages = _conversation(assistant)
-    ReadMaturationManager(ReadMaturationConfig(enabled=True)).apply(messages)
+    # Enough quiet turns that a well-formed Read would mature; a call whose file
+    # cannot be read from its arguments must never be matured.
+    messages = _conversation(assistant, quiet_turns=8)
+    result = ReadMaturationManager(ReadMaturationConfig(enabled=True)).apply(messages)
+    assert _tool_result_text(result.messages) == RESULT
 
 
 @pytest.mark.parametrize("assistant", MALFORMED.values(), ids=MALFORMED.keys())
@@ -77,3 +93,4 @@ def test_content_router_apply_tolerates_malformed_tool_calls(assistant: dict) ->
     messages = _conversation(assistant)
     result = ContentRouter().apply(messages, EstimatingTokenCounter())
     assert len(result.messages) == len(messages)
+    assert _tool_result_text(result.messages) == RESULT
