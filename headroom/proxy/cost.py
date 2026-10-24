@@ -945,6 +945,8 @@ class CostTracker:
         self._folded_input_usd = 0.0
         self._folded_output_usd = 0.0
         self._folded_savings_usd = 0.0
+        self._folded_cache_aware_savings_usd = 0.0
+        self._folded_tool_savings_usd = 0.0
 
     def reset_runtime(self) -> None:
         """Reset in-memory cost/token counters for local test/debug use."""
@@ -976,6 +978,8 @@ class CostTracker:
         self._folded_input_usd = 0.0
         self._folded_output_usd = 0.0
         self._folded_savings_usd = 0.0
+        self._folded_cache_aware_savings_usd = 0.0
+        self._folded_tool_savings_usd = 0.0
 
     def estimate_cost(
         self,
@@ -1204,9 +1208,11 @@ class CostTracker:
                 tokens_sent=tokens_sent,
                 cache_read=cache_read_tokens,
                 write=write_eff,
+                write_5m=write_5m_eff,
                 write_1h=write_1h_eff,
                 uncached=uncached_tokens,
                 output=output_tokens,
+                tool_schema_saved=tool_schema_saved,
             )
 
         # Populate _costs so check_budget() has real data to enforce against.
@@ -1458,9 +1464,11 @@ class CostTracker:
         tokens_sent: int,
         cache_read: int,
         write: int,
+        write_5m: int,
         write_1h: int,
         uncached: int,
         output: int,
+        tool_schema_saved: int,
     ) -> None:
         """Price one request whose label was folded, with the read-time formulas."""
         prices = self._get_cache_prices(model)
@@ -1480,6 +1488,34 @@ class CostTracker:
         out_price = self._get_output_price(model, long_context=long_context)
         if out_price:
             self._folded_output_usd += max(0, output) * out_price
+        # Cache-aware compression and tool-schema savings: same buckets and
+        # same price lookups as the record-time maps and stats() use.
+        if tokens_saved > 0:
+            _r, c5, c1, cl = _bucket_by_cache_mix(
+                tokens_saved,
+                cache_read_tokens=0,
+                cache_write_tokens=write,
+                cache_write_5m_tokens=write_5m,
+                cache_write_1h_tokens=write_1h,
+                uncached_tokens=uncached,
+                region="live_zone",
+            )
+            ca = self._get_cache_prices(model, long_context=long_context, for_billing=False)
+            if ca:
+                self._folded_cache_aware_savings_usd += c5 * ca[1] + c1 * ca[2] + cl * ca[3]
+        if tool_schema_saved > 0:
+            rd, t5, t1, tl = _bucket_by_cache_mix(
+                tool_schema_saved,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=write,
+                cache_write_5m_tokens=write_5m,
+                cache_write_1h_tokens=write_1h,
+                uncached_tokens=uncached,
+                region="prefix",
+            )
+            tp = self._get_cache_prices(model, for_billing=False)
+            if tp:
+                self._folded_tool_savings_usd += rd * tp[0] + t5 * tp[1] + t1 * tp[2] + tl * tp[3]
 
     def _get_cache_prices(
         self, model: str, *, long_context: bool = False, for_billing: bool = True
@@ -1666,7 +1702,7 @@ class CostTracker:
         # pricing (``savings_usd``) ignores both. Reported separately so budget
         # enforcement keeps its monotonic list-priced basis; the dashboard's
         # cost card prefers this one.
-        cache_aware_savings_usd = 0.0
+        cache_aware_savings_usd = self._folded_cache_aware_savings_usd
         for key in (
             set(self._saved_write_5m_by_tier)
             | set(self._saved_write_1h_by_tier)
@@ -1701,7 +1737,7 @@ class CostTracker:
         # multiplier. Reported as its OWN key rather than widening
         # ``savings_usd``: that figure feeds budget enforcement, and the
         # session summary widens the cost card from this key instead.
-        tool_savings_usd = 0.0
+        tool_savings_usd = self._folded_tool_savings_usd
         tool_models = (
             set(self._tool_saved_read_by_model)
             | set(self._tool_saved_write_5m_by_model)

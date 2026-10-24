@@ -114,6 +114,7 @@ def test_overflow_conserves_every_priced_stats_dollar_figure():
         "cache_write_tokens": 10_000,
         "uncached_tokens": 30_000,
         "output_tokens": 5_000,
+        "tool_schema_saved": 8_000,
     }
     control = CostTracker()
     control.record_tokens("gpt-4o", **kwargs)
@@ -123,9 +124,39 @@ def test_overflow_conserves_every_priced_stats_dollar_figure():
 
     want, got = control.stats(), tracker.stats()
     assert want["total_cost_usd"] > 0
-    for field in ("total_input_cost_usd", "output_cost_usd", "total_cost_usd", "savings_usd"):
+    assert want["cache_aware_savings_usd"] > 0
+    assert want["tool_savings_usd"] > 0
+    for field in (
+        "total_input_cost_usd",
+        "output_cost_usd",
+        "total_cost_usd",
+        "savings_usd",
+        "cache_aware_savings_usd",
+        "tool_savings_usd",
+    ):
         assert got[field] == want[field], field
     assert tracker.totals() == control.totals()
+
+
+def test_overflow_keeps_cache_aware_savings_for_reviewer_probe():
+    kwargs = {
+        "tokens_saved": 40_000,
+        "tokens_sent": 60_000,
+        "cache_read_tokens": 20_000,
+        "cache_write_tokens": 10_000,
+        "uncached_tokens": 30_000,
+        "output_tokens": 5_000,
+    }
+    control = CostTracker()
+    control.record_tokens("gpt-4o", **kwargs)
+    tracker = CostTracker()
+    _saturate_with_unpriced_names(tracker)
+    tracker.record_tokens("gpt-4o", **kwargs)
+    assert control.stats()["cache_aware_savings_usd"] > 0
+    assert tracker.stats()["cache_aware_savings_usd"] == control.stats()["cache_aware_savings_usd"]
+    tracker.reset_runtime()
+    assert tracker.stats()["cache_aware_savings_usd"] == 0.0
+    assert tracker.stats()["tool_savings_usd"] == 0.0
 
 
 def test_overflowing_passthrough_names_add_no_dollars():
