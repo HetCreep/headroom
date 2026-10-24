@@ -96,6 +96,16 @@ class ReadLifecycleResult:
     ccr_hashes: list[str] = field(default_factory=list)
 
 
+def _rejected_before_running(content: Any) -> bool:
+    """True when a tool_result's text is a ``<tool_use_error>`` validation error."""
+    if isinstance(content, list):
+        content = next(
+            (b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"),
+            None,
+        )
+    return isinstance(content, str) and content.lstrip().startswith("<tool_use_error>")
+
+
 class ReadLifecycleManager:
     """Event-driven Read lifecycle management.
 
@@ -267,19 +277,29 @@ class ReadLifecycleManager:
 
     @staticmethod
     def _failed_tool_use_ids(messages: list[dict[str, Any]]) -> set[str]:
-        """Ids of Anthropic tool_use blocks whose tool_result has is_error set."""
+        """Ids of Anthropic tool_use blocks that were rejected before they ran.
+
+        Only an is_error tool_result whose text is a ``<tool_use_error>`` (the
+        harness's pre-execution validation, e.g. "String to replace not found")
+        proves the file was not touched. Any other error, such as a call that was
+        interrupted and "may have partially or fully completed", still counts as
+        an edit.
+        """
         failed: set[str] = set()
         for msg in messages:
             content = msg.get("content")
             if not isinstance(content, list):
                 continue
             for block in content:
-                if (
+                if not (
                     isinstance(block, dict)
                     and block.get("type") == "tool_result"
                     and block.get("is_error")
                 ):
-                    failed.add(block.get("tool_use_id", ""))
+                    continue
+                tool_use_id = block.get("tool_use_id")
+                if isinstance(tool_use_id, str) and _rejected_before_running(block.get("content")):
+                    failed.add(tool_use_id)
         return failed
 
     def _find_tool_call_msg_index(

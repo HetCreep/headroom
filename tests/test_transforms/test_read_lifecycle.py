@@ -142,6 +142,7 @@ def make_anthropic_tool_result(tool_call_id: str, content: str) -> dict:
 
 LARGE_CONTENT = "x" * 2000  # Well above min_size_bytes
 SMALL_CONTENT = "tiny"  # Below min_size_bytes
+REJECTED_EDIT = "<tool_use_error>String to replace not found in file.</tool_use_error>"
 
 
 # =============================================================================
@@ -440,7 +441,7 @@ class TestAnthropicFormat:
         """A tool_result with is_error means the edit did not happen."""
         mgr = ReadLifecycleManager(ReadLifecycleConfig(enabled=True))
 
-        failed = make_anthropic_tool_result("e1", "old_string not found")
+        failed = make_anthropic_tool_result("e1", REJECTED_EDIT)
         failed["content"][0]["is_error"] = True
         messages = [
             make_anthropic_read("r1", "/src/app.py"),
@@ -457,7 +458,7 @@ class TestAnthropicFormat:
     def test_successful_edit_after_failed_edit_still_makes_read_stale(self):
         mgr = ReadLifecycleManager(ReadLifecycleConfig(enabled=True))
 
-        failed = make_anthropic_tool_result("e1", "old_string not found")
+        failed = make_anthropic_tool_result("e1", REJECTED_EDIT)
         failed["content"][0]["is_error"] = True
         messages = [
             make_anthropic_read("r1", "/src/app.py"),
@@ -470,6 +471,59 @@ class TestAnthropicFormat:
 
         result = mgr.apply(messages)
         assert result.reads_stale == 1
+
+    def test_interrupted_edit_still_makes_read_stale(self):
+        """An error that is not a pre-run rejection may have changed the file."""
+        mgr = ReadLifecycleManager(ReadLifecycleConfig(enabled=True))
+
+        failed = make_anthropic_tool_result(
+            "e1",
+            "Interrupted: the response that made this tool call was stopped while "
+            "the call was running; it may have partially or fully completed.",
+        )
+        failed["content"][0]["is_error"] = True
+        messages = [
+            make_anthropic_read("r1", "/src/app.py"),
+            make_anthropic_tool_result("r1", LARGE_CONTENT),
+            make_anthropic_edit("e1", "/src/app.py"),
+            failed,
+        ]
+
+        result = mgr.apply(messages)
+        assert result.reads_stale == 1
+
+    def test_rejected_edit_with_text_block_content_keeps_read_fresh(self):
+        mgr = ReadLifecycleManager(ReadLifecycleConfig(enabled=True))
+
+        failed = make_anthropic_tool_result("e1", "")
+        failed["content"][0]["content"] = [{"type": "text", "text": REJECTED_EDIT}]
+        failed["content"][0]["is_error"] = True
+        messages = [
+            make_anthropic_read("r1", "/src/app.py"),
+            make_anthropic_tool_result("r1", LARGE_CONTENT),
+            make_anthropic_edit("e1", "/src/app.py"),
+            failed,
+        ]
+
+        result = mgr.apply(messages)
+        assert result.reads_stale == 0
+        assert result.messages[1]["content"][0]["content"] == LARGE_CONTENT
+
+    def test_error_result_with_non_string_tool_use_id_is_ignored(self):
+        mgr = ReadLifecycleManager(ReadLifecycleConfig(enabled=True))
+
+        bad = make_anthropic_tool_result("e1", REJECTED_EDIT)
+        bad["content"][0]["tool_use_id"] = ["e1"]
+        bad["content"][0]["is_error"] = True
+        messages = [
+            make_anthropic_read("r1", "/src/app.py"),
+            make_anthropic_tool_result("r1", LARGE_CONTENT),
+            bad,
+        ]
+
+        result = mgr.apply(messages)
+        assert result.reads_fresh == 1
+        assert result.messages[1]["content"][0]["content"] == LARGE_CONTENT
 
 
 class TestCCRStoreIntegration:
