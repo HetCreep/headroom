@@ -292,8 +292,8 @@ class ReadMaturationManager:
                     continue
                 try:
                     args = json.loads(func.get("arguments", "{}"))
-                except (ValueError, TypeError):
-                    args = {}
+                except (ValueError, TypeError):  # not JSON: unknown file
+                    continue
                 if not isinstance(args, dict):  # list/str/number: unknown file
                     continue
                 fp = args.get("file_path") or args.get("path") or ""

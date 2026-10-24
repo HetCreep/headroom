@@ -40,6 +40,7 @@ MALFORMED = {
     "arguments_list": _openai({"name": "Read", "arguments": "[1]"}),
     "arguments_string": _openai({"name": "Read", "arguments": '"s"'}),
     "arguments_number": _openai({"name": "Read", "arguments": "5"}),
+    "arguments_invalid_json": _openai({"name": "Read", "arguments": "{"}),
     "arguments_file_path_list": _openai({"name": "Read", "arguments": '{"file_path": ["a"]}'}),
     "tool_use_file_path_list": _anthropic({"file_path": ["a"]}),
     "tool_use_path_dict": _anthropic({"path": {"a": 1}}),
