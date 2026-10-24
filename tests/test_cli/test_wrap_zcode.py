@@ -205,6 +205,33 @@ def test_detect_upstream_only_proxy_provider_falls_back(tmp_path: Path) -> None:
     assert upstream.provider_name == "Z.ai (default)"
 
 
+def test_detect_upstream_keeps_ipv6_provider_when_proxy_is_ipv4(tmp_path: Path) -> None:
+    """[::1] is a different socket from the 127.0.0.1 proxy, so it stays selectable."""
+    import json as _json
+
+    from headroom.providers.zcode.runtime import detect_upstream
+
+    config = tmp_path / "config.json"
+    config.write_text(
+        _json.dumps(
+            {
+                "provider": {
+                    "v6": {
+                        "name": "Local v6",
+                        "kind": "anthropic",
+                        "enabled": True,
+                        "options": {"baseURL": "http://[::1]:8787"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    upstream = detect_upstream(config, proxy_port=8787)
+    assert upstream.provider_name == "Local v6"
+    assert upstream.base_url == "http://[::1]:8787"
+
+
 @pytest.mark.parametrize("base_url", [None, 42, ["x"]], ids=["null", "int", "list"])
 def test_detect_upstream_non_string_baseurl_skips(tmp_path: Path, base_url: object) -> None:
     """detect_upstream falls back instead of raising when baseURL is not a string."""

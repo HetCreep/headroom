@@ -42,12 +42,17 @@ def build_proxy_targets(port: int) -> ZCodeProxyTargets:
 
 
 def _points_at_proxy(base_url: str, proxy_port: int | None) -> bool:
-    """True when *base_url* is a loopback URL on the Headroom proxy's own port."""
+    """True when *base_url* names the Headroom proxy: its advertised host and port.
+
+    Policy: the proxy is advertised on ``127.0.0.1`` (see ``build_proxy_targets``)
+    and ``localhost`` is treated as that same host. ``[::1]`` is a different
+    socket, so an IPv6 provider on the same port is a real upstream, not the proxy.
+    """
     if proxy_port is None:
         return False
     try:
         parts = urlsplit(base_url)
-        return parts.hostname in ("127.0.0.1", "localhost", "::1") and parts.port == proxy_port
+        return parts.hostname in ("127.0.0.1", "localhost") and parts.port == proxy_port
     except ValueError:
         return False
 
