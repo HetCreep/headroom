@@ -101,6 +101,15 @@ def test_other_ports_and_hosts_are_still_captured(tmp_path, url):
     assert captured == [url]
 
 
+@pytest.mark.parametrize("url", ["http://127.0.0.1:99999", "http://[::1"])
+def test_unparseable_base_url_is_not_treated_as_the_proxy(tmp_path, url):
+    # urlsplit raises ValueError for these; such a URL is not this proxy.
+    r, sf, captured = _make(tmp_path)
+    _write(sf, {"env": {"ANTHROPIC_BASE_URL": url}})
+    assert r.tick() is True
+    assert captured == [url]
+
+
 def test_ipv6_proxy_address_is_self_only_for_ipv6_bind(tmp_path):
     sf = tmp_path / "settings.json"
     captured: list[str] = []
