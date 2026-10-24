@@ -1915,10 +1915,9 @@ class SavingsTracker:
                 last["total_tokens_saved"],
             )
             if history_ahead:
-                lifetime_savings_usd = max(
-                    lifetime_savings_usd,
-                    _coerce_signed_float(last["compression_savings_usd"]),
-                )
+                # The checkpoint is the newer source here; a numeric max() would
+                # discard a newer negative total in favour of an older higher one.
+                lifetime_savings_usd = _coerce_signed_float(last["compression_savings_usd"])
             lifetime_tool_tokens_saved = max(
                 lifetime_tool_tokens_saved,
                 _coerce_int(last.get("tool_tokens_saved")),

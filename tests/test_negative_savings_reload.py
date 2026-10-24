@@ -116,3 +116,20 @@ def test_loss_after_last_checkpoint_is_not_overwritten_by_history(tmp_path) -> N
 
     reloaded = SavingsTracker(path=str(path)).snapshot()
     assert reloaded["lifetime"]["compression_savings_usd"] == pytest.approx(-0.5)
+
+
+@pytest.mark.parametrize("stale_usd", [0.0, 1.0])
+def test_newer_negative_checkpoint_wins_over_stale_lifetime_dollars(tmp_path, stale_usd) -> None:
+    path = tmp_path / "savings.json"
+    _losing_request(SavingsTracker(path=str(path)))
+    saved = json.loads(path.read_text())
+    assert saved["history"][-1]["total_tokens_saved"] == 100
+    assert saved["history"][-1]["compression_savings_usd"] == pytest.approx(-0.5)
+    # Stale lifetime block: behind the checkpoint on tokens, dollars older/higher.
+    saved["lifetime"]["tokens_saved"] = 0
+    saved["lifetime"]["compression_savings_usd"] = stale_usd
+    path.write_text(json.dumps(saved))
+
+    lifetime = SavingsTracker(path=str(path)).snapshot()["lifetime"]
+    assert lifetime["tokens_saved"] == 100
+    assert lifetime["compression_savings_usd"] == pytest.approx(-0.5)
