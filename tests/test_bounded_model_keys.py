@@ -84,3 +84,55 @@ def test_savings_history_checkpoints_clip_model_names(tmp_path):
     history = json.loads((tmp_path / "proxy_savings.json").read_text(encoding="utf-8"))["history"]
     assert history
     assert all(len(point["model"]) <= MAX_LABEL_LENGTH for point in history)
+
+
+def _saturate_with_unpriced_names(tracker: CostTracker) -> None:
+    for i in range(MAX_TRACKED_MODELS):
+        tracker.record_tokens(f"unpriced-{i}", tokens_saved=0, tokens_sent=0)
+
+
+def test_priced_request_after_saturation_keeps_aggregate_dollars():
+    control = CostTracker()
+    control.record_tokens("gpt-4o", tokens_saved=0, tokens_sent=100_000, uncached_tokens=100_000)
+    assert control.totals() == (100_000, 0.25)
+
+    tracker = CostTracker()
+    _saturate_with_unpriced_names(tracker)
+    tracker.record_tokens("gpt-4o", tokens_saved=0, tokens_sent=100_000, uncached_tokens=100_000)
+
+    assert tracker._requests_by_model["other"] == 1
+    assert tracker.totals() == (100_000, 0.25)
+    assert tracker.totals()[1] == tracker.period_cost_breakdown()["total_usd"]
+    assert tracker.stats()["total_input_cost_usd"] == 0.25
+
+
+def test_overflow_conserves_every_priced_stats_dollar_figure():
+    kwargs = {
+        "tokens_saved": 40_000,
+        "tokens_sent": 60_000,
+        "cache_read_tokens": 20_000,
+        "cache_write_tokens": 10_000,
+        "uncached_tokens": 30_000,
+        "output_tokens": 5_000,
+    }
+    control = CostTracker()
+    control.record_tokens("gpt-4o", **kwargs)
+    tracker = CostTracker()
+    _saturate_with_unpriced_names(tracker)
+    tracker.record_tokens("gpt-4o", **kwargs)
+
+    want, got = control.stats(), tracker.stats()
+    assert want["total_cost_usd"] > 0
+    for field in ("total_input_cost_usd", "output_cost_usd", "total_cost_usd", "savings_usd"):
+        assert got[field] == want[field], field
+    assert tracker.totals() == control.totals()
+
+
+def test_overflowing_passthrough_names_add_no_dollars():
+    tracker = CostTracker()
+    for i in range(MAX_TRACKED_MODELS):
+        tracker.record_tokens(f"passthrough:batch:m{i}", tokens_saved=0, tokens_sent=1)
+    tracker.record_tokens(
+        "passthrough:gpt-4o", tokens_saved=0, tokens_sent=100_000, uncached_tokens=100_000
+    )
+    assert tracker.stats()["total_input_cost_usd"] == 0.0

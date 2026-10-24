@@ -27,7 +27,11 @@ from headroom.proxy.budget_basis_policy import (
     resolve_estimated_basis_policy,
 )
 from headroom.proxy.modes import PROXY_MODE_CACHE
-from headroom.proxy.persistent_metrics import MAX_TRACKED_MODELS, bounded_model_key
+from headroom.proxy.persistent_metrics import (
+    MAX_TRACKED_MODELS,
+    OTHER_MODEL,
+    bounded_model_key,
+)
 
 if TYPE_CHECKING:
     from headroom.proxy.prometheus_metrics import PrometheusMetrics
@@ -935,6 +939,12 @@ class CostTracker:
         self._api_cache_write_5m_by_model: dict[str, int] = {}
         self._api_cache_write_1h_by_model: dict[str, int] = {}
         self._api_uncached_by_model: dict[str, int] = {}
+        # Priced dollars of requests whose model label was folded into ``other``:
+        # the read-time pass prices by label, and ``other`` has no price, so
+        # those dollars are priced once here, at record time.
+        self._folded_input_usd = 0.0
+        self._folded_output_usd = 0.0
+        self._folded_savings_usd = 0.0
 
     def reset_runtime(self) -> None:
         """Reset in-memory cost/token counters for local test/debug use."""
@@ -963,6 +973,9 @@ class CostTracker:
         self._api_cache_write_5m_by_model.clear()
         self._api_cache_write_1h_by_model.clear()
         self._api_uncached_by_model.clear()
+        self._folded_input_usd = 0.0
+        self._folded_output_usd = 0.0
+        self._folded_savings_usd = 0.0
 
     def estimate_cost(
         self,
@@ -1183,6 +1196,18 @@ class CostTracker:
             self._api_cache_write_1h_by_model.get(key, 0) + write_1h_eff
         )
         self._api_uncached_by_model[key] = self._api_uncached_by_model.get(key, 0) + uncached_tokens
+        if key == OTHER_MODEL and model != OTHER_MODEL:
+            self._book_folded_usd(
+                model,
+                long_context=long_context,
+                tokens_saved=tokens_saved,
+                tokens_sent=tokens_sent,
+                cache_read=cache_read_tokens,
+                write=write_eff,
+                write_1h=write_1h_eff,
+                uncached=uncached_tokens,
+                output=output_tokens,
+            )
 
         # Populate _costs so check_budget() has real data to enforce against.
         # When the call site had no API usage breakdown (all cache/uncached
@@ -1424,6 +1449,38 @@ class CostTracker:
         w5m = total - w1h
         return w5m * w5m_price + w1h * w1h_price
 
+    def _book_folded_usd(
+        self,
+        model: str,
+        *,
+        long_context: bool,
+        tokens_saved: int,
+        tokens_sent: int,
+        cache_read: int,
+        write: int,
+        write_1h: int,
+        uncached: int,
+        output: int,
+    ) -> None:
+        """Price one request whose label was folded, with the read-time formulas."""
+        prices = self._get_cache_prices(model)
+        if prices:
+            cr_price, w5_price, w1h_price, uncached_price = prices
+            if cache_read + write + uncached > 0:
+                w1h = min(max(0, write_1h), write)
+                self._folded_input_usd += (
+                    cache_read * cr_price
+                    + (write - w1h) * w5_price
+                    + w1h * w1h_price
+                    + uncached * uncached_price
+                )
+            else:
+                self._folded_input_usd += tokens_sent * uncached_price
+            self._folded_savings_usd += tokens_saved * uncached_price
+        out_price = self._get_output_price(model, long_context=long_context)
+        if out_price:
+            self._folded_output_usd += max(0, output) * out_price
+
     def _get_cache_prices(
         self, model: str, *, long_context: bool = False, for_billing: bool = True
     ) -> tuple[float, float, float, float] | None:
@@ -1498,7 +1555,7 @@ class CostTracker:
                     )
                 else:
                     cost_with_headroom += sent * uncached_price
-        return total_input_tokens, round(cost_with_headroom, 4)
+        return total_input_tokens, round(cost_with_headroom + self._folded_input_usd, 4)
 
     def stats(self) -> dict:
         """Get token statistics per model."""
@@ -1575,12 +1632,13 @@ class CostTracker:
                 cost_with_headroom += model_cost
                 total_billed_input_tokens += billed_tokens
 
+        cost_with_headroom += self._folded_input_usd
         # Compression savings: price saved tokens at the model's list input price.
         # This is simple, monotonic, and transparent — each saved token is valued
         # at the published $/token rate for its model. Not affected by cache mix.
         # Budget enforcement reads this figure, so it stays as-is; the
         # cache-aware valuation below is reported alongside it.
-        savings_usd = 0.0
+        savings_usd = self._folded_savings_usd
         for model in self._tokens_saved_by_model:
             if model.startswith("passthrough:"):
                 continue
@@ -1595,7 +1653,7 @@ class CostTracker:
         # Completion spend. The input-only figure above is what a budget and the
         # per-model table want; a card that says "$X spent" has to include the
         # tokens the model emitted, or the spend it shows isn't the bill.
-        output_cost_usd = 0.0
+        output_cost_usd = self._folded_output_usd
         for (model, long_context), out_tokens in self._output_tokens_by_tier.items():
             price = self._get_output_price(model, long_context=long_context)
             if price:
