@@ -2943,3 +2943,73 @@ def test_long_commands_skip_the_quadratic_edit_distance(monkeypatch):
 def test_short_commands_still_use_edit_distance():
     """Commands within the cap keep the existing edit-distance behaviour."""
     assert _commands_related_as_retry("cargo build", "cargo build --release")
+
+
+def _record_oversized_levenshtein(monkeypatch):
+    """Wrap _levenshtein and record every call on an input past the cap."""
+    import headroom.memory.traffic_learner as tl
+
+    real = tl._levenshtein
+    oversized: list[tuple[int, int]] = []
+
+    def _recording(a, b):
+        if max(len(a), len(b)) > tl._RETRY_EDIT_DISTANCE_MAX_CHARS:
+            oversized.append((len(a), len(b)))
+        return real(a, b)
+
+    monkeypatch.setattr(tl, "_levenshtein", _recording)
+    return oversized
+
+
+def test_oversized_first_token_skips_the_quadratic_edit_distance(monkeypatch):
+    """Review of #4371: a long executable token must not reach _levenshtein either."""
+    import headroom.memory.traffic_learner as tl
+
+    oversized = _record_oversized_levenshtein(monkeypatch)
+    head = "x" * 2000
+    # the first tokens (2000 and 2001 chars) are prefix-related; "execute" is shared
+    assert tl._commands_related_as_retry(f"{head} execute", f"{head}3 execute")
+    assert tl._bash_binaries_match(head, f"{head}3")
+    assert not tl._bash_binaries_match(head, f"{head}333")
+    assert oversized == []
+
+
+def test_short_binary_names_keep_the_prefix_tolerance():
+    assert _bash_binaries_match("python", "python3")
+    assert _bash_binaries_match("python3", "python")
+    assert _bash_binaries_match("python", "python32")
+    assert not _bash_binaries_match("python", "python321")
+    assert not _bash_binaries_match("pyth", "python3")
+
+
+@pytest.mark.asyncio
+async def test_oversized_first_token_through_on_tool_result(monkeypatch):
+    """Same case through the entry point the proxy handlers await."""
+    oversized = _record_oversized_levenshtein(monkeypatch)
+    learner = TrafficLearner(backend=None, user_id="test-user", min_evidence=1)
+    head = "x" * 2000
+    await learner.on_tool_result(
+        tool_name="Bash",
+        tool_input={"command": f"{head} execute"},
+        tool_output="Error: execute failed with status 2",
+        is_error=True,
+    )
+    await learner.on_tool_result(
+        tool_name="Bash",
+        tool_input={"command": f"{head}3 execute"},
+        tool_output="done",
+        is_error=False,
+    )
+    assert oversized == []
+    assert learner.get_stats()["patterns_extracted"] >= 1
+
+
+def test_oversized_path_basename_skips_the_quadratic_edit_distance(monkeypatch):
+    """The file-path typo check runs the same edit distance on traffic basenames."""
+    import headroom.memory.traffic_learner as tl
+
+    oversized = _record_oversized_levenshtein(monkeypatch)
+    name = "y" * 2000
+    assert not tl._paths_related_as_typo(f"/a/{name}.rs", f"/a/{name}x.rs")
+    assert tl._paths_related_as_typo("/a/staet.rs", "/a/state.rs")
+    assert oversized == []

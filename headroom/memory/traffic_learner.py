@@ -320,6 +320,10 @@ def _paths_related_as_typo(failed: str, success: str) -> bool:
         return False
     if a == b:
         return True
+    # Basenames come from tool traffic; no real file name comes near this cap,
+    # so skip the quadratic edit distance rather than run it on an oversized one.
+    if max(len(a), len(b)) > _RETRY_EDIT_DISTANCE_MAX_CHARS:
+        return False
     threshold = max(2, max(len(a), len(b)) // 3)
     return _levenshtein(a, b) <= threshold
 
@@ -375,8 +379,11 @@ def _bash_binaries_match(a: str, b: str) -> bool:
     b_base = b.rsplit("/", 1)[-1]
     if a_base == b_base:
         return True
-    if (a_base.startswith(b_base) or b_base.startswith(a_base)) and _levenshtein(
-        a_base, b_base
+    # One name is a prefix of the other, so their edit distance is exactly the
+    # length difference: compare lengths instead of running _levenshtein (O(n*m))
+    # on an unbounded, traffic-derived token.
+    if (a_base.startswith(b_base) or b_base.startswith(a_base)) and abs(
+        len(a_base) - len(b_base)
     ) <= 2:
         return True
     return False
