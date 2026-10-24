@@ -515,3 +515,69 @@ def test_wrap_zcode_passes_openai_upstream(
 
     assert captured.get("anthropic_api_url") is None
     assert captured.get("openai_api_url") == "https://my-api.example.com/v1"
+
+
+@pytest.mark.parametrize("base_url", ["http://127.0.0.1:99999", "http://127.0.0.1:abc"])
+def test_detect_upstream_keeps_provider_with_unparseable_port(
+    tmp_path: Path, base_url: str
+) -> None:
+    """A port urlsplit cannot read is not the proxy's port, so the provider stays selectable."""
+    from headroom.providers.zcode.runtime import detect_upstream
+
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "odd": {
+                        "name": "Odd port",
+                        "kind": "anthropic",
+                        "enabled": True,
+                        "options": {"baseURL": base_url},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    upstream = detect_upstream(config, proxy_port=8787)
+    assert upstream.provider_name == "Odd port"
+
+
+def test_wrap_zcode_keeps_requested_port_when_no_free_port_is_found(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the free-port search fails, the upstream is chosen against the requested port."""
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    captured: dict[str, object] = {}
+    home = _zcode_config_with(tmp_path, "http://127.0.0.1:8787")
+    with (
+        patch("headroom.providers.zcode.runtime.zcode_config_dir", return_value=home),
+        patch.object(wrap_mod, "_check_proxy", return_value=False),
+        patch.object(wrap_mod, "_foreign_listener", return_value=False),
+        patch.object(wrap_mod, "_find_available_port", side_effect=RuntimeError("no port")),
+        patch.object(wrap_mod, "_run_proxy_only_watcher", side_effect=captured.update),
+    ):
+        runner.invoke(main, ["wrap", "zcode", "--port", "8787"])
+    assert captured["port"] == 8787
+    assert captured["anthropic_api_url"] == "https://api.z.ai/api/anthropic"
+
+
+def test_wrap_zcode_reuses_running_headroom_proxy_port(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Headroom proxy already on the port is reused; no other port is searched for."""
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    captured: dict[str, object] = {}
+    home = _zcode_config_with(tmp_path, "http://127.0.0.1:8787")
+    with (
+        patch("headroom.providers.zcode.runtime.zcode_config_dir", return_value=home),
+        patch.object(wrap_mod, "_check_proxy", return_value=True),
+        patch.object(wrap_mod, "_foreign_listener", return_value=False),
+        patch.object(wrap_mod, "_find_available_port") as find_port,
+        patch.object(wrap_mod, "_run_proxy_only_watcher", side_effect=captured.update),
+    ):
+        runner.invoke(main, ["wrap", "zcode", "--port", "8787"])
+    find_port.assert_not_called()
+    assert captured["port"] == 8787
+    assert captured["anthropic_api_url"] == "https://api.z.ai/api/anthropic"
