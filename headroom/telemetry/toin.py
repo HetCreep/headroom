@@ -229,6 +229,25 @@ def _get_current_tenant_key_or_default() -> str:
         return DEFAULT_TENANT_KEY
 
 
+# ToolPattern fields that must be numbers; a wrong-typed value breaks get_stats later.
+_NUMERIC_PATTERN_FIELDS = (
+    "total_compressions",
+    "total_items_seen",
+    "total_items_kept",
+    "avg_compression_ratio",
+    "avg_token_reduction",
+    "total_retrievals",
+    "full_retrievals",
+    "search_retrievals",
+    "optimal_max_items",
+    "observations",
+    "sample_size",
+    "user_count",
+    "confidence",
+    "last_updated",
+)
+
+
 @dataclass
 class ToolPattern:
     """Aggregated intelligence about a tool type across all users.
@@ -543,6 +562,7 @@ class ToolIntelligenceNetwork:
         self._dirty = False
         # Set when a load skipped malformed entries; see save().
         self._load_skipped_entries = False
+        self._bad_copy_warned = False
 
         # Load existing data from backend
         if self._backend is not None:
@@ -1409,6 +1429,10 @@ class ToolIntelligenceNetwork:
                 try:
                     key = _deserialize_pattern_key(serialized_key)
                     imported = ToolPattern.from_dict(pattern_dict)
+                    for name in _NUMERIC_PATTERN_FIELDS:
+                        value = getattr(imported, name)
+                        if isinstance(value, bool) or not isinstance(value, (int, float)):
+                            raise TypeError(f"{name} is not a number")
                     self._sanitize_loaded_pattern(imported)
                 except Exception:
                     # One malformed entry must not abort the rest of the file.
@@ -1633,25 +1657,33 @@ class ToolIntelligenceNetwork:
         # Recalculate recommendations based on merged data
         self._update_recommendations(existing)
 
-    def _keep_copy_of_partially_loaded_file(self) -> None:
+    def _keep_copy_of_partially_loaded_file(self) -> bool:
         """Copy the original store to ``<path>.bad`` once if the load skipped entries.
 
         Saving writes only what is in memory, so the skipped entries would be
         gone from the file. An existing ``.bad`` copy is never overwritten.
+
+        Returns:
+            False when a copy was needed but could not be made; the caller must
+            not write the store then.
         """
         from .backends import FileSystemTOINBackend
 
         if not self._load_skipped_entries or not isinstance(self._backend, FileSystemTOINBackend):
-            return
+            return True
         src = self._backend._path
         dst = src.with_name(src.name + ".bad")
         try:
             if src.exists() and not dst.exists():
                 shutil.copy2(src, dst)
                 logger.warning("TOIN kept a copy of the partly unreadable store at %s", dst)
-            self._load_skipped_entries = False
         except OSError as e:
-            logger.warning("Could not keep a copy of the TOIN store: %s", e)
+            if not self._bad_copy_warned:
+                self._bad_copy_warned = True
+                logger.warning("Could not keep a copy of the TOIN store, not saving: %s", e)
+            return False
+        self._load_skipped_entries = False
+        return True
 
     def save(self) -> None:
         """Save TOIN data via the storage backend.
@@ -1668,7 +1700,8 @@ class ToolIntelligenceNetwork:
 
         # Step 2: Write outside lock (slow I/O operation)
         try:
-            self._keep_copy_of_partially_loaded_file()
+            if not self._keep_copy_of_partially_loaded_file():
+                return
             self._backend.save(data)
 
             # Step 3: Update state under lock (fast)
