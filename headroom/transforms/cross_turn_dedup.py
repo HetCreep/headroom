@@ -39,9 +39,9 @@ from ..log_safety import describe_exception, safe_id
 logger = logging.getLogger(__name__)
 
 # A run must be at least this many lines AND this many chars to be worth a
-# pointer. Small dups are left alone (fragmenting context is not worth it) —
-# and a larger floor keeps the pointer comfortably shorter than the span it
-# replaces, so a fold is always a net byte win.
+# pointer. Small dups are left alone (fragmenting context is not worth it).
+# The floor alone does not make a fold a net byte win (the pointer can still be
+# as long as a short span); dedup_blocks checks the UTF-8 sizes before folding.
 DEFAULT_MIN_LINES = 3
 DEFAULT_MIN_CHARS = 40
 # Cap anchor candidates examined per line so a hot line (e.g. ``    return``)
@@ -54,7 +54,7 @@ MAX_ANCHOR_CANDIDATES = 16
 # line must start with the digit, so ``number + delta`` re-numbers byte-exactly
 # without touching alignment padding, keeping renumbered folds strictly lossless.
 #
-# ``[1-9]\d*`` (not ``\d+``) is load-bearing: a LEADING-ZERO run (``08:00:01`` in
+# The leading ``[1-9]`` (not ``\d``) is load-bearing: a LEADING-ZERO run (``08:00:01`` in
 # a timestamped log, ``007:...``) is not an unpadded grep/sed line number, and
 # recovery is ``str(int(number) + delta)``, which drops the zero pad — ``int("08")
 # + 1`` renders ``"9"``, not ``"09"``. Matching those would fold them under a
