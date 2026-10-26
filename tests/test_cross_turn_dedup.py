@@ -494,6 +494,18 @@ def test_fold_never_longer_than_span():
     out, stats = dedup_blocks([_blk(t, 1), _blk(t, 2)])
     assert stats["spans_folded"] == 0
     assert out[1].text == t
+    # Byte boundary: the pointer's "↑" is 3 UTF-8 bytes. A 44-char span has a
+    # 43-char pointer (shorter in characters) that is 45 bytes, so folding
+    # would grow the output; it must stay. A 46-byte span folds.
+    t44 = "a" * 25 + "\n" + "b" * 9 + "\n" + "c" * 8
+    assert len(t44) == 44
+    out, stats = dedup_blocks([_blk(t44, 1), _blk(t44, 2)])
+    assert stats["spans_folded"] == 0
+    assert out[1].text == t44
+    t46 = "a" * 27 + "\n" + "b" * 9 + "\n" + "c" * 8
+    out, stats = dedup_blocks([_blk(t46, 1), _blk(t46, 2)])
+    assert stats["spans_folded"] == 1
+    assert len(out[1].text.encode("utf-8")) < len(t46.encode("utf-8"))
     # A long span still folds.
     long_t = _code("", 5)
     out, stats = dedup_blocks([_blk(long_t, 1), _blk(long_t, 2)])

@@ -269,8 +269,11 @@ def dedup_blocks(
                     span = lines[i : i + m[0]]
                     span_text = "\n".join(span)
                     ptr = _pointer(span, blocks[m[1]].turn, m[3])
-                    # Never fold when the pointer is not shorter than the span.
-                    if len(span_text) >= min_chars and len(ptr) < len(span_text):
+                    # Never fold when the pointer is not shorter than the span, in
+                    # UTF-8 bytes ("↑" is 3 bytes, so character counts mislead).
+                    if len(span_text) >= min_chars and len(ptr.encode("utf-8")) < len(
+                        span_text.encode("utf-8")
+                    ):
                         out.append(ptr)
                         # Folded span is NOT verbatim in this block's output:
                         # mark None so it can't seed a later contiguous match,
