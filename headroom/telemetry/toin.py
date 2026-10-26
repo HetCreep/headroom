@@ -64,6 +64,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import warnings
@@ -540,6 +541,8 @@ class ToolIntelligenceNetwork:
         # Tracking
         self._last_save_time = time.time()
         self._dirty = False
+        # Set when a load skipped malformed entries; see save().
+        self._load_skipped_entries = False
 
         # Load existing data from backend
         if self._backend is not None:
@@ -1371,7 +1374,7 @@ class ToolIntelligenceNetwork:
                 },
             }
 
-    def import_patterns(self, data: dict[str, Any]) -> None:
+    def import_patterns(self, data: dict[str, Any]) -> int:
         """Import patterns from another source.
 
         Used for federated learning: aggregate patterns from multiple
@@ -1390,18 +1393,27 @@ class ToolIntelligenceNetwork:
 
         Args:
             data: Exported pattern data.
+
+        Returns:
+            Number of malformed pattern entries that were skipped.
         """
         if not self._config.enabled:
-            return
+            return 0
 
         patterns_data = data.get("patterns", {})
         source_instance = data.get("instance_id", "unknown")
 
+        skipped = 0
         with self._lock:
             for serialized_key, pattern_dict in patterns_data.items():
-                key = _deserialize_pattern_key(serialized_key)
-                imported = ToolPattern.from_dict(pattern_dict)
-                self._sanitize_loaded_pattern(imported)
+                try:
+                    key = _deserialize_pattern_key(serialized_key)
+                    imported = ToolPattern.from_dict(pattern_dict)
+                    self._sanitize_loaded_pattern(imported)
+                except Exception:
+                    # One malformed entry must not abort the rest of the file.
+                    skipped += 1
+                    continue
                 # Make sure dataclass fields agree with the dict key — pre-F3
                 # dumps don't carry tenant_key on the pattern, and pre-B5
                 # dumps don't carry auth_mode/model_family either; promote
@@ -1430,6 +1442,13 @@ class ToolIntelligenceNetwork:
 
             self._prune_patterns_locked()
             self._dirty = True
+
+        if skipped:
+            logger.warning(
+                "TOIN import skipped malformed pattern entries",
+                extra={"event": "toin_import_entries_skipped", "skipped": skipped},
+            )
+        return skipped
 
     def _merge_patterns(self, existing: ToolPattern, imported: ToolPattern) -> None:
         """Merge imported pattern into existing."""
@@ -1614,6 +1633,26 @@ class ToolIntelligenceNetwork:
         # Recalculate recommendations based on merged data
         self._update_recommendations(existing)
 
+    def _keep_copy_of_partially_loaded_file(self) -> None:
+        """Copy the original store to ``<path>.bad`` once if the load skipped entries.
+
+        Saving writes only what is in memory, so the skipped entries would be
+        gone from the file. An existing ``.bad`` copy is never overwritten.
+        """
+        from .backends import FileSystemTOINBackend
+
+        if not self._load_skipped_entries or not isinstance(self._backend, FileSystemTOINBackend):
+            return
+        src = self._backend._path
+        dst = src.with_name(src.name + ".bad")
+        try:
+            if src.exists() and not dst.exists():
+                shutil.copy2(src, dst)
+                logger.warning("TOIN kept a copy of the partly unreadable store at %s", dst)
+            self._load_skipped_entries = False
+        except OSError as e:
+            logger.warning("Could not keep a copy of the TOIN store: %s", e)
+
     def save(self) -> None:
         """Save TOIN data via the storage backend.
 
@@ -1629,6 +1668,7 @@ class ToolIntelligenceNetwork:
 
         # Step 2: Write outside lock (slow I/O operation)
         try:
+            self._keep_copy_of_partially_loaded_file()
             self._backend.save(data)
 
             # Step 3: Update state under lock (fast)
@@ -1659,7 +1699,8 @@ class ToolIntelligenceNetwork:
         try:
             data = self._backend.load()
             if data:
-                self.import_patterns(data)
+                if self.import_patterns(data):
+                    self._load_skipped_entries = True
                 with self._lock:
                     changed = any(
                         self._sanitize_loaded_pattern(pattern)
