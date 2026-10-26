@@ -63,7 +63,11 @@ MAX_ANCHOR_CANDIDATES = 16
 # fold only on an EXACT match (delta 0) — the "prefer false negatives" posture.
 # Real grep -n / sed -n / rg -n numbers never carry a leading zero, so the
 # intended renumber-fold feature is unaffected.
-_LINENO_RE = re.compile(r"^([1-9]\d*)(:|\t)(.*)$", re.DOTALL)
+#
+# ``\d{0,17}`` bounds the run at 18 digits: Python refuses ``int()`` on a run of
+# 4,301+ digits (ValueError), which would abort dedup for the whole request. A
+# longer run is not a real line number, so the line stays non-numbered.
+_LINENO_RE = re.compile(r"^([1-9]\d{0,17})(:|\t)(.*)$", re.DOTALL)
 
 
 def _num_and_key(line: str) -> tuple[int | None, str, str]:
@@ -264,9 +268,9 @@ def dedup_blocks(
                 if m is not None and m[0] >= min_lines:
                     span = lines[i : i + m[0]]
                     span_text = "\n".join(span)
-                    if len(span_text) >= min_chars:
-                        ref_turn = blocks[m[1]].turn
-                        ptr = _pointer(span, ref_turn, m[3])
+                    ptr = _pointer(span, blocks[m[1]].turn, m[3])
+                    # Never fold when the pointer is not shorter than the span.
+                    if len(span_text) >= min_chars and len(ptr) < len(span_text):
                         out.append(ptr)
                         # Folded span is NOT verbatim in this block's output:
                         # mark None so it can't seed a later contiguous match,
