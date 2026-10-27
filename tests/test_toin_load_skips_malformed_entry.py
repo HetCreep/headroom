@@ -160,3 +160,82 @@ def test_non_file_backend_saves_without_copy() -> None:
 def test_disabled_toin_import_skips_nothing(tmp_path: Path) -> None:
     toin = ToolIntelligenceNetwork(TOINConfig(storage_path=str(tmp_path / "t.json"), enabled=False))
     assert toin.import_patterns({"patterns": {"bad": {}}}) == 0
+
+
+def _foreign_export(path: Path, field: str, value: object) -> str:
+    """Like ``_corrupt`` but the file came from another instance, so tracking runs on import."""
+    _corrupt(path, field, value)
+    data = json.loads(path.read_text())
+    data["instance_id"] = "foreign-instance"
+    text = json.dumps(data)
+    path.write_text(text, newline="\n")
+    return text
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("seen_instance_hashes", "bad"),
+        ("seen_instance_hashes", {"a": 1}),
+        ("seen_instance_hashes", [1]),
+        ("seen_instance_hashes", 5),
+        ("commonly_retrieved_fields", "bad"),
+        ("common_query_patterns", {"a": 1}),
+        ("preserve_fields", [["x"]]),
+        ("field_retrieval_frequency", {"a": "x"}),
+        ("query_pattern_frequency", [1]),
+        ("strategy_success_rates", {"a": None}),
+        ("optimal_strategy", ["s"]),
+        ("tool_signature_hash", 5),
+    ],
+)
+def test_malformed_collection_field_skips_only_that_entry(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    path = tmp_path / "toin.json"
+    text = _foreign_export(path, field, value)
+    reloaded = _new(path)
+    assert len(reloaded._patterns) == 2  # the two healthy entries survive
+    assert reloaded._load_skipped_entries is True
+    for p in reloaded._patterns.values():  # tracked once each, none half-added
+        assert p.user_count == 2 and p._seen_instance_hashes.count("foreign-instance") == 1
+    reloaded.save()
+    assert (tmp_path / "toin.json.bad").read_bytes() == text.encode()
+    assert len(json.loads(path.read_text())["patterns"]) == 2
+
+
+def test_failed_merge_leaves_existing_pattern_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _new(tmp_path / "a.json")
+    _record(source, 0)
+    exported = source.export_patterns()
+    target = _new(tmp_path / "b.json")
+    _record(target, 0)  # same signature: the import merges into this pattern
+    before = [p.to_dict() for p in target._patterns.values()]
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("merge failed late")
+
+    monkeypatch.setattr(target, "_update_recommendations", boom)
+    assert target.import_patterns(exported) == 1
+    assert [p.to_dict() for p in target._patterns.values()] == before
+    monkeypatch.undo()
+    assert target.import_patterns(exported) == 0
+    assert next(iter(target._patterns.values())).total_compressions == 2
+
+
+def test_foreign_import_tracks_source_once_and_caps_at_100(tmp_path: Path) -> None:
+    source = _new(tmp_path / "a.json")
+    for i in range(2):
+        _record(source, i)
+    exported = source.export_patterns()
+    exported["instance_id"] = "src"
+    first, second = list(exported["patterns"].values())
+    first["seen_instance_hashes"] = ["src"]  # already counted: not added again
+    second["seen_instance_hashes"] = [f"h{i}" for i in range(100)]  # list at its cap
+    target = _new(tmp_path / "b.json")
+    assert target.import_patterns(exported) == 0
+    counts = sorted(len(p._seen_instance_hashes) for p in target._patterns.values())
+    assert counts == [1, 100]
+    assert sorted(p.user_count for p in target._patterns.values()) == [1, 2]  # cap still counts

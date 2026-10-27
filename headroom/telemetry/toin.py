@@ -60,6 +60,7 @@ detection).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -246,6 +247,48 @@ _NUMERIC_PATTERN_FIELDS = (
     "confidence",
     "last_updated",
 )
+
+# ToolPattern collection fields that must hold str items (lists) or str keys (dicts).
+_STR_LIST_PATTERN_FIELDS = (
+    "_seen_instance_hashes",
+    "commonly_retrieved_fields",
+    "common_query_patterns",
+    "preserve_fields",
+)
+_NUMBER_MAP_PATTERN_FIELDS = (
+    "field_retrieval_frequency",
+    "query_pattern_frequency",
+    "strategy_success_rates",
+)
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _check_pattern_types(pattern: ToolPattern) -> None:
+    """Raise TypeError if an imported pattern has a wrong-typed field.
+
+    ``from_dict`` does not check types, and a wrong-typed field would only fail
+    later (in the merge, the instance tracking or ``get_stats``), so it is
+    rejected here, before anything touches the live pattern table.
+    """
+    for name in _NUMERIC_PATTERN_FIELDS:
+        if not _is_number(getattr(pattern, name)):
+            raise TypeError(f"{name} is not a number")
+    for name in _STR_LIST_PATTERN_FIELDS:
+        value = getattr(pattern, name)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise TypeError(f"{name} is not a list of strings")
+    for name in _NUMBER_MAP_PATTERN_FIELDS:
+        value = getattr(pattern, name)
+        if not isinstance(value, dict) or not all(
+            isinstance(k, str) and _is_number(v) for k, v in value.items()
+        ):
+            raise TypeError(f"{name} is not a string-to-number map")
+    for name in ("tool_signature_hash", "optimal_strategy"):
+        if not isinstance(getattr(pattern, name), str):
+            raise TypeError(f"{name} is not a string")
 
 
 @dataclass
@@ -1426,43 +1469,42 @@ class ToolIntelligenceNetwork:
         skipped = 0
         with self._lock:
             for serialized_key, pattern_dict in patterns_data.items():
+                # Everything that reads entry data runs in this boundary and the
+                # live table is written last, so a bad entry is skipped whole.
                 try:
                     key = _deserialize_pattern_key(serialized_key)
                     imported = ToolPattern.from_dict(pattern_dict)
-                    for name in _NUMERIC_PATTERN_FIELDS:
-                        value = getattr(imported, name)
-                        if isinstance(value, bool) or not isinstance(value, (int, float)):
-                            raise TypeError(f"{name} is not a number")
+                    _check_pattern_types(imported)
                     self._sanitize_loaded_pattern(imported)
+                    # Make sure dataclass fields agree with the dict key — pre-F3
+                    # dumps don't carry tenant_key on the pattern, and pre-B5
+                    # dumps don't carry auth_mode/model_family either; promote
+                    # from the (possibly default) key.
+                    imported.tenant_key = key[0]
+                    imported.auth_mode = key[1]
+                    imported.model_family = key[2]
+
+                    if key in self._patterns:
+                        # Merge into a copy so a failure cannot leave the live
+                        # pattern half-merged.
+                        accepted = copy.deepcopy(self._patterns[key])
+                        self._merge_patterns(accepted, imported)
+                    else:
+                        accepted = imported
+                        # For NEW patterns from another instance, track the source in
+                        # _seen_instance_hashes so user_count reflects cross-user data
+                        if source_instance != self._instance_id:
+                            if source_instance not in accepted._seen_instance_hashes:
+                                # Limit storage to 100 unique instances to bound memory
+                                if len(accepted._seen_instance_hashes) < 100:
+                                    accepted._seen_instance_hashes.append(source_instance)
+                                # CRITICAL: Always increment user_count (even after cap)
+                                accepted.user_count += 1
                 except Exception:
                     # One malformed entry must not abort the rest of the file.
                     skipped += 1
                     continue
-                # Make sure dataclass fields agree with the dict key — pre-F3
-                # dumps don't carry tenant_key on the pattern, and pre-B5
-                # dumps don't carry auth_mode/model_family either; promote
-                # from the (possibly default) key.
-                imported.tenant_key = key[0]
-                imported.auth_mode = key[1]
-                imported.model_family = key[2]
-
-                if key in self._patterns:
-                    # Merge with existing
-                    self._merge_patterns(self._patterns[key], imported)
-                else:
-                    # Add new pattern - need to track source instance
-                    self._patterns[key] = imported
-
-                    # For NEW patterns from another instance, track the source in
-                    # _seen_instance_hashes so user_count reflects cross-user data
-                    if source_instance != self._instance_id:
-                        pattern = self._patterns[key]
-                        if source_instance not in pattern._seen_instance_hashes:
-                            # Limit storage to 100 unique instances to bound memory
-                            if len(pattern._seen_instance_hashes) < 100:
-                                pattern._seen_instance_hashes.append(source_instance)
-                            # CRITICAL: Always increment user_count (even after cap)
-                            pattern.user_count += 1
+                self._patterns[key] = accepted
 
             self._prune_patterns_locked()
             self._dirty = True
