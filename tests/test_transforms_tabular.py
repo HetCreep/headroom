@@ -403,15 +403,6 @@ def test_parse_csv_and_records() -> None:
     assert records[1] == {"name": "Bob", "age": "25", "city": "LA"}
 
 
-def test_parse_csv_keeps_interior_blank_rows_and_trims_the_ends() -> None:
-    headers, rows = parse_csv("a,b\n1,2\n,\n3,4\n,\n5,6\n,\n")
-    assert headers == ["a", "b"]
-    assert rows == [["1", "2"], ["", ""], ["3", "4"], ["", ""], ["5", "6"]]
-    # Empty and whitespace-only lines have no real cells and are still skipped.
-    assert parse_csv("a,b\n1,2\n\n3,4\n")[1] == [["1", "2"], ["3", "4"]]
-    assert parse_csv("a,b\n1,2\n  \n3,4\n")[1] == [["1", "2"], ["3", "4"]]
-
-
 def test_parse_markdown_table_drops_separator() -> None:
     headers, rows = parse_markdown_table(MARKDOWN)
     assert headers == ["name", "age"]

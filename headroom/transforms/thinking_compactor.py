@@ -153,10 +153,7 @@ def compact_thinking_to_text(
             if not (isinstance(block, dict) and block.get("type") == "thinking"):
                 new_content.append(block)
                 continue
-            text = block.get("thinking")
-            if not isinstance(text, str):  # null/non-str: leave the block as it is
-                new_content.append(block)
-                continue
+            text = block.get("thinking", "")
             words = len(text.split())
             if words < min_words:
                 new_content.append(block)

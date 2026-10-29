@@ -74,15 +74,9 @@ def parse_csv(content: str, delimiter: str = ",") -> tuple[list[str], list[list[
     """
     reader = csv.reader(io.StringIO(content), delimiter=delimiter)
     try:
-        parsed = [r for r in reader if len(r) > 1 or any(c.strip() for c in r)]  # skip empty lines
+        parsed = [row for row in reader if any(cell.strip() for cell in row)]
     except csv.Error:
         return [], []
-    # Trim all-blank rows at both ends, but keep interior ones (as empty
-    # cells) so the row count survives, like spreadsheet_ingest._rows_to_csv.
-    while parsed and not any(cell.strip() for cell in parsed[-1]):
-        parsed.pop()
-    while parsed and not any(cell.strip() for cell in parsed[0]):
-        parsed.pop(0)
     if not parsed:
         return [], []
     headers = [h.strip() for h in parsed[0]]
