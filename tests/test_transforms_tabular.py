@@ -513,10 +513,12 @@ def test_parse_fixed_width() -> None:
     assert rows[0] == ["Alice", "30", "NYC"]
 
 
-def test_parse_fixed_width_splits_on_column_positions_not_double_spaces() -> None:
+def test_parse_fixed_width_never_splits_on_double_spaces_inside_a_cell() -> None:
     # One-space gutter between USER and COMMAND on the 4444 row, and a double
     # space inside that row's COMMAND cell. A 2+ space split returned
-    # ['4444', 'sysadmin1 sleep', '60'] (COMMAND=60), still three cells.
+    # ['4444', 'sysadmin1 sleep', '60'] (COMMAND=60), still three cells. A
+    # one-space gap cannot be told apart from a space inside a cell, so the
+    # table is not parsed and passes through verbatim.
     table = (
         "PID   USER      COMMAND\n"
         "1     root      /sbin/init\n"
@@ -524,10 +526,7 @@ def test_parse_fixed_width_splits_on_column_positions_not_double_spaces() -> Non
         "4444  sysadmin1 sleep  60\n"
         "5     root      cron"
     )
-    headers, rows = parse_fixed_width(table)
-    assert headers == ["PID", "USER", "COMMAND"]
-    assert rows[2] == ["4444", "sysadmin1", "sleep  60"]
-    assert rows[3] == ["5", "root", "cron"]
+    assert parse_fixed_width(table) == ([], [])
 
 
 def test_parse_fixed_width_keeps_an_empty_cell_empty() -> None:
@@ -546,14 +545,15 @@ def test_parse_fixed_width_keeps_an_empty_cell_empty() -> None:
 
 
 def test_parse_fixed_width_never_shifts_a_value_when_the_grid_is_ambiguous() -> None:
-    # Every NOTE cell is shorter than the double-spaced one, so the gap inside
-    # 'two  words' is a column-wide gutter and 'words' has no header. Either
-    # answer is safe except putting 'two' under STATUS.
+    # 'fine' covers one of the two spaces inside 'two  words', so no 2-wide
+    # gutter opens there and NOTE keeps the whole value. The one wrong answer
+    # is putting 'two' under STATUS.
     table = (
         "NAME   STATUS  NOTE\nalpha  ok      fine\nbeta           two  words\ngamma  ok      fine"
     )
     headers, rows = parse_fixed_width(table)
-    assert (headers, rows) == ([], [])
+    assert headers == ["NAME", "STATUS", "NOTE"]
+    assert rows[1] == ["beta", "", "two  words"]
 
 
 def test_parse_fixed_width_refuses_a_row_that_crosses_a_column_boundary() -> None:
@@ -1087,3 +1087,30 @@ def test_load_spreadsheet_missing_file(tmp_path) -> None:
 
     with pytest.raises(FileNotFoundError):
         load_spreadsheet(tmp_path / "nope.xlsx")
+
+
+def test_parse_fixed_width_keeps_multiword_headers_and_values_whole():
+    text = (
+        "First Name      AGE  CITY\n"
+        "Alice Brown     30   LA\n"
+        "Carol Green     25   SF\n"
+        "David White     40   NY\n"
+        "Frank Young     32   TX"
+    )
+    headers, rows = parse_fixed_width(text)
+    assert headers == ["First Name", "AGE", "CITY"]
+    assert rows[0] == ["Alice Brown", "30", "LA"]
+
+
+def test_parse_fixed_width_cost_follows_input_length():
+    # Many short rows plus one very long cell: checking every row at every
+    # position of the longest row was ~20M checks for 33 KB of input.
+    import time
+
+    text = "KEY  FLAG  VALUE\n" + "a    b     c\n" * 1000 + "a    b     " + "z" * 20000
+    t0 = time.perf_counter()
+    headers, rows = parse_fixed_width(text)
+    elapsed = time.perf_counter() - t0
+    assert headers == ["KEY", "FLAG", "VALUE"]
+    assert rows[-1][2] == "z" * 20000
+    assert elapsed < 0.05, f"parse took {elapsed:.3f}s for {len(text)} chars"
