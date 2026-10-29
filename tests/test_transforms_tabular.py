@@ -513,6 +513,69 @@ def test_parse_fixed_width() -> None:
     assert rows[0] == ["Alice", "30", "NYC"]
 
 
+def test_parse_fixed_width_splits_on_column_positions_not_double_spaces() -> None:
+    # One-space gutter between USER and COMMAND on the 4444 row, and a double
+    # space inside that row's COMMAND cell. A 2+ space split returned
+    # ['4444', 'sysadmin1 sleep', '60'] (COMMAND=60), still three cells.
+    table = (
+        "PID   USER      COMMAND\n"
+        "1     root      /sbin/init\n"
+        "22    www-data  nginx\n"
+        "4444  sysadmin1 sleep  60\n"
+        "5     root      cron"
+    )
+    headers, rows = parse_fixed_width(table)
+    assert headers == ["PID", "USER", "COMMAND"]
+    assert rows[2] == ["4444", "sysadmin1", "sleep  60"]
+    assert rows[3] == ["5", "root", "cron"]
+
+
+def test_parse_fixed_width_keeps_an_empty_cell_empty() -> None:
+    # An empty STATUS next to a NOTE with a double space used to read as
+    # STATUS='two', NOTE='words'. Here the other NOTE cells are longer, so the
+    # grid is unambiguous and the empty cell stays empty.
+    table = (
+        "NAME   STATUS  NOTE\n"
+        "alpha  ok      fine-and-dandy-things\n"
+        "beta           two  words\n"
+        "gamma  ok      fine-and-dandy-things"
+    )
+    headers, rows = parse_fixed_width(table)
+    assert headers == ["NAME", "STATUS", "NOTE"]
+    assert rows[1] == ["beta", "", "two  words"]
+
+
+def test_parse_fixed_width_never_shifts_a_value_when_the_grid_is_ambiguous() -> None:
+    # Every NOTE cell is shorter than the double-spaced one, so the gap inside
+    # 'two  words' is a column-wide gutter and 'words' has no header. Either
+    # answer is safe except putting 'two' under STATUS.
+    table = (
+        "NAME   STATUS  NOTE\nalpha  ok      fine\nbeta           two  words\ngamma  ok      fine"
+    )
+    headers, rows = parse_fixed_width(table)
+    assert (headers, rows) == ([], [])
+
+
+def test_parse_fixed_width_refuses_a_row_that_crosses_a_column_boundary() -> None:
+    table = "NAME  STATUS\nalphabetical  ok\nbeta  ok"
+    assert parse_fixed_width(table) == ([], [])
+
+
+def test_parse_tabular_fixed_width_control_matches_kubectl_columns(monkeypatch) -> None:
+    import headroom.transforms.tabular_ingest as ti
+
+    monkeypatch.setattr(
+        ti,
+        "detect_content_type",
+        lambda _c: DetectionResult(ContentType.TABULAR, 0.9, {"format": "fixed_width"}),
+    )
+    parsed = ti.parse_tabular(KUBECTL)
+    assert parsed is not None
+    headers, rows, _fmt = parsed
+    assert headers == ["NAME", "READY", "STATUS", "RESTARTS", "AGE"]
+    assert rows[2] == ["worker-5c8d7f9b8-lq2vx", "1/1", "Running", "2", "5h"]
+
+
 def test_to_records_empty_headers_returns_empty() -> None:
     assert to_records([], [["a", "b"]]) == []
 
