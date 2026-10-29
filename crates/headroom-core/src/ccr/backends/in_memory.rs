@@ -10,6 +10,7 @@
 //! workers (see `RUST_DEV.md` "Multi-worker deployment").
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -33,11 +34,14 @@ use crate::ccr::{max_lifetime_for, CcrStore, DEFAULT_CAPACITY, DEFAULT_TTL};
 ///   small sweep.
 pub struct InMemoryCcrStore {
     map: DashMap<String, Entry>,
-    /// FIFO insertion order. Stale entries (already removed from `map`
-    /// via TTL expiry) are tolerated — `pop_front` + `map.remove` is a
-    /// no-op for missing keys, and capacity-bounded sweeps loop until
-    /// they actually evict a real entry.
-    order: Mutex<VecDeque<String>>,
+    /// FIFO insertion order as `(hash, seq)`. A queue item is live only
+    /// while `map[hash].seq == seq`: an entry removed by TTL expiry and
+    /// stored again later gets a new `seq`, so its old queue item can
+    /// neither evict the fresh entry nor pin it. Stale items are skipped
+    /// by eviction and dropped by `compact_order` once the queue grows
+    /// past twice the capacity.
+    order: Mutex<VecDeque<(String, u64)>>,
+    next_seq: AtomicU64,
     ttl: Duration,
     max_lifetime: Duration,
     capacity: usize,
@@ -46,6 +50,7 @@ pub struct InMemoryCcrStore {
 #[derive(Clone)]
 struct Entry {
     payload: String,
+    seq: u64,
     inserted: Instant,
     last_accessed: Instant,
 }
@@ -77,6 +82,7 @@ impl InMemoryCcrStore {
         Self {
             map: DashMap::with_capacity(capacity),
             order: Mutex::new(VecDeque::with_capacity(capacity)),
+            next_seq: AtomicU64::new(0),
             ttl,
             max_lifetime,
             capacity,
@@ -90,12 +96,22 @@ impl InMemoryCcrStore {
     fn evict_until_under_capacity(&self) {
         let mut guard = self.order.lock().expect("ccr order mutex poisoned");
         while self.map.len() >= self.capacity {
-            let Some(oldest) = guard.pop_front() else {
+            let Some((oldest, seq)) = guard.pop_front() else {
                 break;
             };
-            // `remove` is a no-op if `oldest` was already lazy-expired.
-            // Loop continues until we actually shrink the map.
-            self.map.remove(&oldest);
+            // Remove only the entry this queue item was recorded for. A
+            // stale item (the entry expired, or was stored again since)
+            // removes nothing, and the loop moves on to the next one.
+            self.map.remove_if(&oldest, |_, entry| entry.seq == seq);
+        }
+    }
+
+    /// Drop queue items whose entry is gone or was re-stored, so the
+    /// queue stays within a constant factor of the live entries even
+    /// when entries keep expiring through `get` without any eviction.
+    fn compact_order(&self, order: &mut VecDeque<(String, u64)>) {
+        if order.len() > self.capacity.max(16) * 2 {
+            order.retain(|(hash, seq)| self.map.get(hash).is_some_and(|e| e.seq == *seq));
         }
     }
 }
@@ -125,22 +141,20 @@ impl CcrStore for InMemoryCcrStore {
             self.evict_until_under_capacity();
         }
         let now = Instant::now();
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let entry = Entry {
             payload: payload.to_string(),
+            seq,
             inserted: now,
             last_accessed: now,
         };
-        let prev = self.map.insert(hash.to_string(), entry);
-        if prev.is_none() {
-            // Truly new key — record in FIFO order. (If `prev.is_some()`
-            // it means another thread re-inserted between our get_mut
-            // miss and this insert; treat that as a fast-path overwrite
-            // and skip the queue append to avoid duplicates.)
-            self.order
-                .lock()
-                .expect("ccr order mutex poisoned")
-                .push_back(hash.to_string());
-        }
+        // Record the entry under its own `seq`. If another thread inserted
+        // the same hash between our get_mut miss and this insert, ours
+        // replaces it and that thread's queue item goes stale (skipped).
+        self.map.insert(hash.to_string(), entry);
+        let mut order = self.order.lock().expect("ccr order mutex poisoned");
+        order.push_back((hash.to_string(), seq));
+        self.compact_order(&mut order);
     }
 
     fn get(&self, hash: &str) -> Option<String> {
@@ -236,6 +250,44 @@ mod tests {
         std::thread::sleep(Duration::from_millis(25));
         assert_eq!(store.get("a"), None);
         assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn reput_after_expiry_keeps_the_newest_entry() {
+        // a expires and is dropped by get(); b is stored; a is stored again
+        // (now the newest entry). At capacity, the oldest live entry is b,
+        // so storing c must evict b and keep the fresh a.
+        let store = InMemoryCcrStore::with_capacity_and_ttl(2, Duration::from_millis(30));
+        store.put("a", "old");
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(store.get("a"), None);
+        store.put("b", "2");
+        store.put("a", "fresh");
+        store.put("c", "3");
+        let a = store.get("a");
+        assert_eq!(store.get("b"), None, "b was the oldest live entry");
+        assert_eq!(
+            a.as_deref(),
+            Some("fresh"),
+            "fresh a was evicted instead of b"
+        );
+    }
+
+    #[test]
+    fn order_queue_stays_bounded_when_entries_expire_through_get() {
+        let store = InMemoryCcrStore::with_capacity_and_ttl(4, Duration::from_millis(1));
+        for i in 0..2000 {
+            let k = format!("k{i}");
+            store.put(&k, "v");
+            std::thread::sleep(Duration::from_millis(2));
+            assert_eq!(store.get(&k), None);
+        }
+        let n = store.order.lock().unwrap().len();
+        assert!(
+            n <= 32,
+            "order queue grew to {n} while the map held {}",
+            store.len()
+        );
     }
 
     #[test]
