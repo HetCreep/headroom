@@ -598,7 +598,36 @@ fn load_tokenizer(path: &Path, repo: &str) -> Result<Tokenizer, KompressError> {
     Ok(tokenizer)
 }
 
+/// Pure decision behind [`ort_session_preconditions`]: an ONNX Runtime session
+/// may only be built when the CPU can run the precompiled binary (else
+/// `SIGILL`, #1723) and the dynamic loader is pinned (else `ort` deadlocks,
+/// #1715). `Err` carries a stable `reason` tag plus detail for logging.
+pub(crate) fn ort_session_gate(
+    cpu_ok: bool,
+    loader: Result<(), String>,
+) -> Result<(), (&'static str, String)> {
+    if !cpu_ok {
+        return Err((
+            "cpu_unsupported",
+            "ONNX Runtime backend requires AVX2 on this x86 CPU".to_string(),
+        ));
+    }
+    loader.map_err(|e| ("ort_loader_unavailable", e))
+}
+
+/// Run the two guards the crate requires before any `ort` session is built
+/// (same pair magika and the embedding scorer use).
+pub(crate) fn ort_session_preconditions() -> Result<(), (&'static str, String)> {
+    ort_session_gate(
+        crate::onnx_cpu::onnx_runtime_supported_by_cpu(),
+        crate::transforms::magika_detector::dynamic_ort_loader_ready(),
+    )
+}
+
 fn build_session(path: &Path) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
+    // Every Kompress constructor (from_files / from_pretrained / from_cache)
+    // funnels through here, so guarding here covers all of them.
+    ort_session_preconditions().map_err(|(reason, e)| format!("{reason}: {e}"))?;
     let session = Session::builder()?.commit_from_file(path)?;
     Ok(session)
 }
@@ -656,6 +685,18 @@ fn hf_hub_roots() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ort_session_gate_rejects_unsupported_cpu_and_loader_failure() {
+        assert_eq!(ort_session_gate(true, Ok(())), Ok(()));
+        let (reason, _) = ort_session_gate(false, Ok(())).unwrap_err();
+        assert_eq!(reason, "cpu_unsupported");
+        let (reason, e) = ort_session_gate(true, Err("no dylib".into())).unwrap_err();
+        assert_eq!((reason, e.as_str()), ("ort_loader_unavailable", "no dylib"));
+        // CPU failure wins; the loader result is irrelevant.
+        let (reason, _) = ort_session_gate(false, Err("x".into())).unwrap_err();
+        assert_eq!(reason, "cpu_unsupported");
+    }
 
     /// `from_pretrained` must refuse before `Api::new()` when the operator
     /// air-gapped the box.
