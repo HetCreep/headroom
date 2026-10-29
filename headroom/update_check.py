@@ -172,6 +172,10 @@ def _select_latest(data: dict[str, Any], *, allow_pre: bool) -> str | None:
             candidates.append(ver)
     if candidates:
         return str(max(candidates))
+    if isinstance(releases, dict) and releases:
+        # Releases are listed but none is installable (all yanked or file-less):
+        # do not fall back to info.version, which names one of them.
+        return None
 
     # Fallback to info.version when releases is absent/empty.
     info = data.get("info")
