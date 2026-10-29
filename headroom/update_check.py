@@ -158,11 +158,9 @@ def _select_latest(data: dict[str, Any], *, allow_pre: bool) -> str | None:
     candidates: list[Version] = []
     if isinstance(releases, dict):
         for ver_str, files in releases.items():
-            # Skip releases whose every artifact is yanked.
-            if (
-                isinstance(files, list)
-                and files
-                and all(isinstance(f, dict) and f.get("yanked") for f in files)
+            # Skip releases with no artifacts, or whose every artifact is yanked.
+            if isinstance(files, list) and (
+                not files or all(isinstance(f, dict) and f.get("yanked") for f in files)
             ):
                 continue
             try:
