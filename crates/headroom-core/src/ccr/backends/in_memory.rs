@@ -42,6 +42,10 @@ pub struct InMemoryCcrStore {
     /// past twice the capacity.
     order: Mutex<VecDeque<(String, u64)>>,
     next_seq: AtomicU64,
+    /// Test-only pause point between inserting a fresh entry and
+    /// recording it in `order`, to reproduce writer interleavings.
+    #[cfg(test)]
+    after_insert_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     ttl: Duration,
     max_lifetime: Duration,
     capacity: usize,
@@ -83,18 +87,19 @@ impl InMemoryCcrStore {
             map: DashMap::with_capacity(capacity),
             order: Mutex::new(VecDeque::with_capacity(capacity)),
             next_seq: AtomicU64::new(0),
+            #[cfg(test)]
+            after_insert_hook: Mutex::new(None),
             ttl,
             max_lifetime,
             capacity,
         }
     }
 
-    /// Sweep the order queue, dropping leading entries that no longer
-    /// exist in the map (already expired or evicted), then evict
-    /// real entries until `map.len() < capacity`. Called only from
-    /// `put` on a fresh-key insert path.
-    fn evict_until_under_capacity(&self) {
-        let mut guard = self.order.lock().expect("ccr order mutex poisoned");
+    /// Evict real entries, oldest first, until `map.len() < capacity`.
+    /// The caller holds the `order` lock, which serializes every
+    /// fresh-key insert, so no entry can be in the map without its
+    /// queue item while this runs.
+    fn evict_until_under_capacity(&self, guard: &mut VecDeque<(String, u64)>) {
         while self.map.len() >= self.capacity {
             let Some((oldest, seq)) = guard.pop_front() else {
                 break;
@@ -135,10 +140,23 @@ impl CcrStore for InMemoryCcrStore {
             return;
         }
 
-        // New entry. Cap-bound first (may sweep a few stale order
-        // entries), then insert and append to the FIFO queue.
+        // New entry. The capacity check, the insert and the queue append
+        // happen under one `order` lock, so a concurrent fresh insert can
+        // never sit in the map without its queue item (which would let
+        // eviction run out of queue while the map is still full). Lock
+        // order is always `order` then a map shard; no path takes `order`
+        // while holding a shard guard.
+        let mut order = self.order.lock().expect("ccr order mutex poisoned");
+        if let Some(mut existing) = self.map.get_mut(hash) {
+            // Another writer stored this hash while we waited for the lock.
+            let now = Instant::now();
+            existing.payload = payload.to_string();
+            existing.inserted = now;
+            existing.last_accessed = now;
+            return;
+        }
         if self.map.len() >= self.capacity {
-            self.evict_until_under_capacity();
+            self.evict_until_under_capacity(&mut order);
         }
         let now = Instant::now();
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
@@ -148,11 +166,11 @@ impl CcrStore for InMemoryCcrStore {
             inserted: now,
             last_accessed: now,
         };
-        // Record the entry under its own `seq`. If another thread inserted
-        // the same hash between our get_mut miss and this insert, ours
-        // replaces it and that thread's queue item goes stale (skipped).
         self.map.insert(hash.to_string(), entry);
-        let mut order = self.order.lock().expect("ccr order mutex poisoned");
+        #[cfg(test)]
+        if let Some(hook) = self.after_insert_hook.lock().expect("hook mutex").take() {
+            hook();
+        }
         order.push_back((hash.to_string(), seq));
         self.compact_order(&mut order);
     }
@@ -288,6 +306,42 @@ mod tests {
             "order queue grew to {n} while the map held {}",
             store.len()
         );
+    }
+
+    #[test]
+    fn concurrent_fresh_inserts_never_exceed_capacity() {
+        use std::sync::{mpsc, Arc};
+        // Capacity 1. Writer A stores x and pauses after the map insert,
+        // before x is recorded in the order queue. Writer C then stores y.
+        // If C could run in that gap it would find no queue item to evict
+        // and leave both x and y in a capacity-1 store.
+        let store = Arc::new(InMemoryCcrStore::with_capacity_and_ttl(1, DEFAULT_TTL));
+        let (paused_tx, paused_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        *store.after_insert_hook.lock().unwrap() = Some(Box::new(move || {
+            paused_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+        let a = {
+            let s = Arc::clone(&store);
+            std::thread::spawn(move || s.put("x", "1"))
+        };
+        paused_rx.recv().unwrap();
+        let c = {
+            let s = Arc::clone(&store);
+            std::thread::spawn(move || s.put("y", "2"))
+        };
+        // Give C time to run into the gap if it can.
+        std::thread::sleep(Duration::from_millis(200));
+        release_tx.send(()).unwrap();
+        a.join().unwrap();
+        c.join().unwrap();
+        assert!(
+            store.len() <= 1,
+            "capacity 1 store holds {} entries",
+            store.len()
+        );
+        assert_eq!(store.get("y").as_deref(), Some("2"));
     }
 
     #[test]
